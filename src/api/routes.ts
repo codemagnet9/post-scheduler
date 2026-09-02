@@ -9,6 +9,9 @@ import * as auth from '../auth/service';
 import * as workspaces from '../workspaces/service';
 import * as connect from '../accounts/connect';
 import { disconnectAccount } from '../accounts/disconnect';
+import * as posts from '../posts/service';
+import * as media from '../media/service';
+import type { PostContent } from '../posts/content';
 import type { Role } from '../authz/abilities';
 
 const OAUTH_REDIRECT_URI = process.env.OAUTH_REDIRECT_URI ?? 'http://localhost:3000/connections/callback';
@@ -88,5 +91,24 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       connect.completeCredentialConnect(req.tenant!, (req.params as { provider: string }).provider, body<{ fields: Record<string, string> }>(req).fields));
     scoped.delete('/workspaces/:workspaceId/connections/:accountId', (req) =>
       disconnectAccount(req.tenant!, (req.params as { accountId: string }).accountId));
+
+    // Composer: account picker, posts CRUD, targets, overrides, schedule, and validation.
+    const postId = (req: FastifyRequest) => (req.params as { postId: string }).postId;
+    scoped.get('/workspaces/:workspaceId/accounts', (req) => posts.listAccounts(req.tenant!));
+    scoped.post('/workspaces/:workspaceId/posts', (req) => posts.createDraft(req.tenant!, body<{ content?: Partial<PostContent>; targetAccountIds: string[] }>(req)));
+    scoped.get('/workspaces/:workspaceId/posts/:postId', (req) => posts.getPost(req.tenant!, postId(req)));
+    scoped.patch('/workspaces/:workspaceId/posts/:postId', (req) => posts.updatePost(req.tenant!, postId(req), body<Partial<PostContent>>(req)));
+    scoped.delete('/workspaces/:workspaceId/posts/:postId', (req) => posts.deletePost(req.tenant!, postId(req)));
+    scoped.post('/workspaces/:workspaceId/posts/:postId/duplicate', (req) => posts.duplicatePost(req.tenant!, postId(req)));
+    scoped.post('/workspaces/:workspaceId/posts/:postId/targets', (req) => posts.addTarget(req.tenant!, postId(req), body<{ accountId: string }>(req).accountId));
+    scoped.delete('/workspaces/:workspaceId/posts/:postId/targets/:targetId', (req) => posts.removeTarget(req.tenant!, postId(req), (req.params as { targetId: string }).targetId));
+    scoped.put('/workspaces/:workspaceId/posts/:postId/targets/:targetId/override', (req) => posts.setOverride(req.tenant!, postId(req), (req.params as { targetId: string }).targetId, body<posts.OverridePatch>(req)));
+    scoped.put('/workspaces/:workspaceId/posts/:postId/schedule', (req) => posts.setSchedule(req.tenant!, postId(req), body(req)));
+    scoped.get('/workspaces/:workspaceId/posts/:postId/validate', (req) => posts.validatePostService(req.tenant!, postId(req)));
+
+    // Media tray: presign a direct-to-storage upload, finalize (verify + probe), delete.
+    scoped.post('/workspaces/:workspaceId/media', (req) => media.createUpload(req.tenant!, body<{ filename: string; declaredType: string; byteSize: number }>(req)));
+    scoped.post('/workspaces/:workspaceId/media/:assetId/finalize', (req) => media.finalizeUpload(req.tenant!, (req.params as { assetId: string }).assetId));
+    scoped.delete('/workspaces/:workspaceId/media/:assetId', (req) => media.deleteMedia(req.tenant!, (req.params as { assetId: string }).assetId));
   });
 }

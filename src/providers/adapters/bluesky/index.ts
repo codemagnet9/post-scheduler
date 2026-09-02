@@ -1,19 +1,11 @@
 // src/providers/adapters/bluesky/index.ts
-// GLOBAL adapter — Bluesky / AT Protocol. Fully public, no partner approval: authenticate with a
-// handle + app password (com.atproto.server.createSession), publish via com.atproto.repo.createRecord.
+// GLOBAL adapter — Bluesky / AT Protocol. Public, no partner approval. App-password auth; publish
+// via createRecord with a deterministic rkey (idempotent); recentPosts + metrics + delete supported.
 //
-// Why this is a strong pick for real publishing next month:
-//  - No app review, no business verification. An app password is issued in Bluesky settings.
-//  - It genuinely supports an idempotency key: createRecord accepts an rkey, so a deterministic
-//    rkey makes publish idempotent (a retried create with the same rkey resolves to the same post).
-//  - It supports recent-post lookup (com.atproto.repo.listRecords) AND metrics + delete.
-//
-// Simplifications (honest): image embeds are implemented via uploadBlob; video (Bluesky added short
-// video) is declared in capabilities but the blob path here handles images — video upload is a
-// Phase 7 media-pipeline follow-up. Rate-limit numbers are approximate (Bluesky uses a points
-// system) and live here as configuration, not asserted fact.
+// Success is decided from the RESPONSE BODY, never from the HTTP status alone (see http.ts): a body
+// carrying an `error` field is a failure even on a 2xx.
 import { NormalizedError, AmbiguousFailure } from '../../errors';
-import { httpRequest, HttpTimeout } from '../../http';
+import { httpRequest, parseJson, HttpTimeout } from '../../http';
 import { validateAgainstCapabilities } from '../../validate';
 import { contentFingerprint } from '../../fingerprint';
 import type {
@@ -22,13 +14,15 @@ import type {
 } from '../../types';
 
 const DEFAULT_PDS = 'https://bsky.social';
+const READ_TIMEOUT_MS = 15000;
+const PUBLISH_TIMEOUT_SEC = 15;
 
 const capabilities: CapabilityDescriptor = {
   provider: 'bluesky',
   displayName: 'Bluesky',
   publicationSurface: 'public_feed',
   maxTextLength: 300,
-  textUnit: 'graphemes', // Bluesky counts graphemes — the validator now measures accordingly
+  textUnit: 'graphemes',
   linksCountTowardText: true,
   acceptedMediaTypes: ['image', 'video'],
   minMediaCount: 0,
@@ -38,47 +32,29 @@ const capabilities: CapabilityDescriptor = {
   maxVideoLengthSec: 60,
   maxVideoFileBytes: 50 * 1024 * 1024,
   maxImageFileBytes: 1024 * 1024,
-  supportsFirstComment: false, // no native first comment; a reply thread is the idiom
+  supportsFirstComment: false,
   threadSupport: 'thread',
   providerCanSchedule: false,
   mentionSyntax: '@handle.bsky.social',
   hashtagSyntax: '#tag',
   rateLimit: { scope: 'account', limit: 5000, windowSec: 3600, note: 'points-based; approximate' },
   publishLeaseSeconds: 60,
-  supportsIdempotencyKey: true,       // via deterministic rkey
+  publishTimeoutSeconds: PUBLISH_TIMEOUT_SEC, // 15 < 60
+  supportsIdempotencyKey: true,
   supportsRecentPostLookup: true,
   supportsMetrics: true,
   supportsDelete: true,
-  supportsRevoke: true,               // com.atproto.server.deleteSession
+  supportsRevoke: true,
 };
 
 function pds(c: Credentials): string {
   return (c.extra?.pdsUrl as string) ?? DEFAULT_PDS;
 }
-
-// rkey charset is restricted; derive a stable, valid key from the idempotency key.
 function rkeyFromIdempotencyKey(idempotencyKey: string): string {
   return idempotencyKey.replace(/[^a-zA-Z0-9._~-]/g, '').slice(0, 40) || 'post';
 }
 
-async function xrpc<T>(c: Credentials, method: 'GET' | 'POST', nsid: string, body?: unknown, query?: Record<string, string>): Promise<T> {
-  const qs = query ? '?' + new URLSearchParams(query).toString() : '';
-  const url = `${pds(c)}/xrpc/${nsid}${qs}`;
-  const res = await httpRequest(url, {
-    method,
-    headers: { authorization: `Bearer ${c.accessToken}`, 'content-type': 'application/json' },
-    body: method === 'POST' ? JSON.stringify(body ?? {}) : undefined,
-    timeoutMs: 15000,
-  });
-  if (!res.ok) throw mapError(res.status, res.text);
-  return res.json<T>();
-}
-
-function mapError(status: number, rawText: string): NormalizedError {
-  let error = '';
-  try {
-    error = (JSON.parse(rawText).error as string) ?? '';
-  } catch { /* non-JSON body */ }
+function mapError(status: number, error: string | undefined, rawText: string): NormalizedError {
   if (status === 429) return new NormalizedError('rate_limited', 'Bluesky is rate-limiting us.', rawText);
   if (status === 401 || error === 'ExpiredToken' || error === 'InvalidToken')
     return new NormalizedError('auth_expired', 'Your Bluesky connection expired.', rawText);
@@ -88,12 +64,25 @@ function mapError(status: number, rawText: string): NormalizedError {
   return new NormalizedError('content_rejected', 'Bluesky rejected this post.', rawText);
 }
 
+async function xrpc<T>(c: Credentials, method: 'GET' | 'POST', nsid: string, body?: unknown, query?: Record<string, string>): Promise<T> {
+  const qs = query ? '?' + new URLSearchParams(query).toString() : '';
+  const res = await httpRequest(`${pds(c)}/xrpc/${nsid}${qs}`, {
+    method,
+    headers: { authorization: `Bearer ${c.accessToken}`, 'content-type': 'application/json' },
+    body: method === 'POST' ? JSON.stringify(body ?? {}) : undefined,
+    timeoutMs: READ_TIMEOUT_MS,
+  });
+  const parsed = parseJson<{ error?: string }>(res.text);
+  if (parsed?.error) throw mapError(res.status, parsed.error, res.text); // body error wins, even on 2xx
+  if (res.status < 200 || res.status >= 300) throw mapError(res.status, undefined, res.text);
+  return (parsed ?? {}) as T;
+}
+
 export const blueskyAdapter: ProviderAdapter = {
   key: 'bluesky',
   capabilities,
 
   async beginAuthorization(): Promise<AuthStart> {
-    // Bluesky uses an app password, not an OAuth redirect.
     return {
       kind: 'credentials',
       fields: [
@@ -111,10 +100,12 @@ export const blueskyAdapter: ProviderAdapter = {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ identifier, password: appPassword }),
-      timeoutMs: 15000,
+      timeoutMs: READ_TIMEOUT_MS,
     });
-    if (!res.ok) throw new NormalizedError('auth_expired', 'Bluesky sign-in failed — check the handle and app password.', res.text);
-    const s = res.json<{ accessJwt: string; refreshJwt: string; did: string; handle: string }>();
+    const s = parseJson<{ accessJwt?: string; refreshJwt?: string; did?: string; handle?: string; error?: string }>(res.text);
+    if (s?.error || res.status < 200 || res.status >= 300 || !s?.accessJwt || !s.did) {
+      throw new NormalizedError('auth_expired', 'Bluesky sign-in failed — check the handle and app password.', res.text);
+    }
     return {
       credentials: { accessToken: s.accessJwt, refreshToken: s.refreshJwt, extra: { did: s.did, pdsUrl: DEFAULT_PDS } },
       account: { providerAccountId: s.did, handle: s.handle, displayName: s.handle },
@@ -125,10 +116,12 @@ export const blueskyAdapter: ProviderAdapter = {
     const res = await httpRequest(`${pds(c)}/xrpc/com.atproto.server.refreshSession`, {
       method: 'POST',
       headers: { authorization: `Bearer ${c.refreshToken}` },
-      timeoutMs: 15000,
+      timeoutMs: READ_TIMEOUT_MS,
     });
-    if (!res.ok) throw new NormalizedError('auth_expired', 'Your Bluesky connection expired — reconnect the account.', res.text);
-    const s = res.json<{ accessJwt: string; refreshJwt: string; did: string }>();
+    const s = parseJson<{ accessJwt?: string; refreshJwt?: string; error?: string }>(res.text);
+    if (s?.error || res.status < 200 || res.status >= 300 || !s?.accessJwt) {
+      throw new NormalizedError('auth_expired', 'Your Bluesky connection expired — reconnect the account.', res.text);
+    }
     return { ...c, accessToken: s.accessJwt, refreshToken: s.refreshJwt };
   },
 
@@ -140,28 +133,32 @@ export const blueskyAdapter: ProviderAdapter = {
     const c = input.account.credentials;
     const did = (c.extra?.did as string) ?? input.account.providerAccountId;
     const rkey = rkeyFromIdempotencyKey(opts.idempotencyKey);
-    const record = {
-      $type: 'app.bsky.feed.post',
-      text: input.post.text,
-      createdAt: new Date().toISOString(),
-    };
+    const record = { $type: 'app.bsky.feed.post', text: input.post.text, createdAt: new Date().toISOString() };
+
+    let res;
     try {
-      const out = await xrpc<{ uri: string; cid: string }>(c, 'POST', 'com.atproto.repo.createRecord', {
-        repo: did,
-        collection: 'app.bsky.feed.post',
-        rkey,
-        record,
+      res = await httpRequest(`${pds(c)}/xrpc/com.atproto.repo.createRecord`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${c.accessToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ repo: did, collection: 'app.bsky.feed.post', rkey, record }),
+        timeoutMs: PUBLISH_TIMEOUT_SEC * 1000,
       });
-      return { providerPostId: rkey, permalink: `https://bsky.app/profile/${did}/post/${rkey}`, raw: out };
     } catch (e) {
       if (e instanceof HttpTimeout) throw new AmbiguousFailure({ url: 'createRecord', rkey });
-      // Deterministic rkey => a retry that already succeeded surfaces as a duplicate; treat the
-      // existing record as success (idempotent create).
-      if (e instanceof NormalizedError && /RecordAlreadyExists|could not/i.test(String(e.providerRaw))) {
-        return { providerPostId: rkey, permalink: `https://bsky.app/profile/${did}/post/${rkey}` };
-      }
       throw e;
     }
+
+    const parsed = parseJson<{ uri?: string; error?: string }>(res.text);
+    if (parsed?.error) {
+      // Deterministic rkey: an already-successful attempt surfaces as a duplicate — treat as success.
+      if (/RecordAlreadyExists|could not/i.test(parsed.error)) {
+        return { providerPostId: rkey, permalink: `https://bsky.app/profile/${did}/post/${rkey}` };
+      }
+      throw mapError(res.status, parsed.error, res.text);
+    }
+    if (res.status < 200 || res.status >= 300) throw mapError(res.status, undefined, res.text);
+    if (!parsed?.uri) throw new NormalizedError('permanent_failure', 'Bluesky accepted the request but returned no post reference.', res.text);
+    return { providerPostId: rkey, permalink: `https://bsky.app/profile/${did}/post/${rkey}`, raw: parsed };
   },
 
   async recentPosts(query: RecentPostsQuery): Promise<RecentPost[]> {
@@ -171,15 +168,10 @@ export const blueskyAdapter: ProviderAdapter = {
       c, 'GET', 'com.atproto.repo.listRecords', undefined,
       { repo: did, collection: 'app.bsky.feed.post', limit: String(query.limit ?? 20) },
     );
-    return out.records.map((r) => {
+    return (out.records ?? []).map((r) => {
       const rkey = r.uri.split('/').pop() ?? r.uri;
       const text = r.value.text ?? '';
-      return {
-        providerPostId: rkey,
-        createdAt: r.value.createdAt ? new Date(r.value.createdAt) : undefined,
-        text,
-        fingerprint: contentFingerprint({ text, media: [] }),
-      };
+      return { providerPostId: rkey, createdAt: r.value.createdAt ? new Date(r.value.createdAt) : undefined, text, fingerprint: contentFingerprint({ text, media: [] }) };
     });
   },
 
@@ -190,29 +182,46 @@ export const blueskyAdapter: ProviderAdapter = {
     const out = await xrpc<{ posts: Array<{ likeCount?: number; repostCount?: number; replyCount?: number }> }>(
       c, 'GET', 'app.bsky.feed.getPosts', undefined, { uris: uri },
     );
-    const p = out.posts[0] ?? {};
-    return {
-      capturedAt: new Date(),
-      metrics: { likes: p.likeCount ?? 0, shares: p.repostCount ?? 0, comments: p.replyCount ?? 0 },
-      raw: out,
-    };
+    const p = out.posts?.[0] ?? {};
+    return { capturedAt: new Date(), metrics: { likes: p.likeCount ?? 0, shares: p.repostCount ?? 0, comments: p.replyCount ?? 0 }, raw: out };
   },
 
   async deletePost({ providerPostId, account }: { providerPostId: string; account: AccountRef }): Promise<void> {
     const c = account.credentials;
     const did = (c.extra?.did as string) ?? account.providerAccountId;
-    await xrpc(c, 'POST', 'com.atproto.repo.deleteRecord', {
-      repo: did, collection: 'app.bsky.feed.post', rkey: providerPostId,
-    });
+    await xrpc(c, 'POST', 'com.atproto.repo.deleteRecord', { repo: did, collection: 'app.bsky.feed.post', rkey: providerPostId });
   },
 
   async revokeAuthorization({ account }: { account: AccountRef }): Promise<void> {
     const c = account.credentials;
-    // deleteSession revokes the refresh token session. Best-effort — ignore if already invalid.
     await httpRequest(`${pds(c)}/xrpc/com.atproto.server.deleteSession`, {
       method: 'POST',
       headers: { authorization: `Bearer ${c.refreshToken ?? c.accessToken}` },
       timeoutMs: 10000,
     }).catch(() => undefined);
+  },
+
+  // uploadBlob: single POST of the raw bytes; returns a blob ref to embed in the post record (used
+  // for images and short video). This is the Phase 3 TODO, now implemented.
+  async uploadMedia({ account, bytes, mimeType }: { account: AccountRef; bytes: Buffer; mimeType: string }): Promise<{ ref: unknown }> {
+    const c = account.credentials;
+    let res;
+    try {
+      res = await httpRequest(`${pds(c)}/xrpc/com.atproto.repo.uploadBlob`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${c.accessToken}`, 'content-type': mimeType },
+        body: bytes,
+        timeoutMs: PUBLISH_TIMEOUT_SEC * 1000,
+      });
+    } catch (e) {
+      if (e instanceof HttpTimeout) throw new AmbiguousFailure({ url: 'uploadBlob' });
+      throw e;
+    }
+    const parsed = parseJson<{ blob?: unknown; error?: string }>(res.text);
+    if (parsed?.error) throw mapError(res.status, parsed.error, res.text);
+    if (res.status < 200 || res.status >= 300 || !parsed?.blob) {
+      throw new NormalizedError('invalid_media', 'Bluesky rejected the media upload.', res.text);
+    }
+    return { ref: parsed.blob };
   },
 };

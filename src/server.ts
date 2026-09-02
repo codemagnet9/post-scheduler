@@ -10,6 +10,8 @@ import { ForbiddenError } from './authz/abilities';
 import { RateLimitedError } from './auth/rate-limit';
 import { ConnectError } from './accounts/connect';
 import { DisconnectError } from './accounts/disconnect';
+import { PostError } from './posts/service';
+import { MediaError } from './media/service';
 
 export function buildServer(): FastifyInstance {
   const app = Fastify({ logger: true });
@@ -28,6 +30,16 @@ export function buildServer(): FastifyInstance {
     if (err instanceof DisconnectError) return reply.notFound(err.message);
     if (err instanceof ConnectError) {
       return err.message === 'state_invalid_or_replayed' ? reply.conflict(err.message) : reply.badRequest(err.message);
+    }
+    if (err instanceof PostError) {
+      if (err.message === 'not_found') return reply.notFound(err.message);
+      if (err.message === 'not_editable') return reply.conflict(err.message);
+      return reply.badRequest(err.message);
+    }
+    if (err instanceof MediaError) {
+      if (err.message === 'not_found') return reply.notFound(err.message);
+      if (err.message === 'asset_in_use') return reply.conflict(err.message);
+      return reply.badRequest(err.message);
     }
     return reply.send(err);
   });

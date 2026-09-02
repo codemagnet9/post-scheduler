@@ -29,6 +29,12 @@ describe('registry consistency', () => {
     expect(() => assertAdapterConsistency(lying)).toThrow(/recentPosts/);
   });
 
+  it('rejects an adapter whose publish timeout is not below its lease (Fix 1)', () => {
+    const { adapter } = createFakeProvider({ key: 'fake-badlease' });
+    const bad = { ...adapter, capabilities: { ...adapter.capabilities, publishTimeoutSeconds: 60, publishLeaseSeconds: 60 } };
+    expect(() => assertAdapterConsistency(bad)).toThrow(/publishTimeoutSeconds/);
+  });
+
   it('register/resolve round-trips and rejects unknown providers', () => {
     const { adapter } = createFakeProvider({ key: 'fake-reg' });
     registerAdapter(adapter);

@@ -17,6 +17,11 @@ export function assertAdapterConsistency(a: ProviderAdapter): void {
   if (c.supportsDelete !== (typeof a.deletePost === 'function')) mism.push('deletePost');
   if (c.supportsRevoke !== (typeof a.revokeAuthorization === 'function')) mism.push('revokeAuthorization');
   if (c.provider !== a.key) mism.push('key/capabilities.provider');
+  // A publish call that can outlast its own lease lets the sweeper reclaim a still-running attempt
+  // and turn a success into a false needs_review. Fail the boot rather than discover this in prod.
+  if (c.publishTimeoutSeconds >= c.publishLeaseSeconds) {
+    mism.push(`publishTimeoutSeconds (${c.publishTimeoutSeconds}) must be < publishLeaseSeconds (${c.publishLeaseSeconds})`);
+  }
   if (mism.length) throw new Error(`adapter '${a.key}' capability/method mismatch: ${mism.join(', ')}`);
 }
 

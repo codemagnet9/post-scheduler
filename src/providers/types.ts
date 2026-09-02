@@ -53,7 +53,9 @@ export interface CapabilityDescriptor {
   hashtagSyntax: string; // '#tag' or 'none'
 
   rateLimit: RateLimitShape;
-  publishLeaseSeconds: number; // per-provider publish lease (see 0002); slow-upload nets raise it
+  publishLeaseSeconds: number;    // per-provider publish lease (see 0002); slow-upload nets raise it
+  publishTimeoutSeconds: number;  // ceiling on a single publish() call. MUST be < publishLeaseSeconds,
+                                  // or the sweeper can fire mid-call and turn a success into needs_review.
 
   // The two flags that decide the ambiguous-failure path (see resolveAmbiguous in errors.ts).
   supportsIdempotencyKey: boolean;
@@ -170,4 +172,9 @@ export interface ProviderAdapter {
 
   // Best-effort revoke at the provider on disconnect. Present iff capabilities.supportsRevoke.
   revokeAuthorization?(params: { account: AccountRef }): Promise<void>;
+
+  // Single-shot media pre-upload (e.g. Bluesky uploadBlob). Networks needing CHUNKED/resumable upload
+  // for large video use the ProviderChunkBackend path (src/media/chunked-upload.ts) instead. Returns
+  // an opaque provider reference to attach to the post.
+  uploadMedia?(params: { account: AccountRef; bytes: Buffer; mimeType: string }): Promise<{ ref: unknown }>;
 }

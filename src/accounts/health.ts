@@ -18,12 +18,15 @@ const REFRESH_EXPIRY_WARN_DAYS = 3;
 // soon" warning; auth_expired => "reauthorization required".
 export function computeDisplayStatus(
   stored: StoredStatus,
-  refreshExpiresAt: Date | null,
+  // Accept a string too: drizzle's execute() returns timestamptz as a STRING, and a caller may pass
+  // refresh_expires_at straight from a DB read. Coerce so the Date math can't throw.
+  refreshExpiresAt: Date | string | null,
   now: Date = new Date(),
 ): DisplayStatus {
   if (stored === 'auth_expired') return 'reauth_required';
   if (stored !== 'active') return stored;
-  if (refreshExpiresAt && refreshExpiresAt.getTime() - now.getTime() < REFRESH_EXPIRY_WARN_DAYS * 86400_000) {
+  const refreshExp = refreshExpiresAt ? new Date(refreshExpiresAt) : null;
+  if (refreshExp && refreshExp.getTime() - now.getTime() < REFRESH_EXPIRY_WARN_DAYS * 86400_000) {
     return 'expiring_soon';
   }
   return 'active';

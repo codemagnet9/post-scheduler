@@ -46,7 +46,7 @@ async function main(): Promise<void> {
   }
 
   // Ensure the app role can log in with the credentials in DATABASE_URL (role is created in 0004).
-  const u = new URL(appUrl);
+  const u = new URL(appUrl!); // guarded at module load (line 14); narrowing doesn't cross into this closure
   const appUser = decodeURIComponent(u.username);
   const appPass = decodeURIComponent(u.password);
   if (appPass) {

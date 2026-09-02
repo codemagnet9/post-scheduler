@@ -15,6 +15,9 @@ export type FakeMode =
   | { kind: 'ok' }
   | { kind: 'slow'; ms: number }
   | { kind: 'accept_then_timeout' } // records the post, then throws AmbiguousFailure
+  | { kind: 'timeout_no_record' }   // throws AmbiguousFailure WITHOUT recording (post never created)
+  | { kind: 'body_error'; code?: FailureCode } // models a 200-with-error-body the adapter classified as a failure
+  | { kind: 'accept_then_reject'; code?: FailureCode } // RECORDS the post, then returns a taxonomy error (4xx-after-accept)
   | { kind: 'fail'; code: FailureCode; retryAfterSec?: number; reason?: string };
 
 export interface FakeControl {
@@ -71,6 +74,7 @@ export function createFakeProvider(config: FakeConfig = {}): { adapter: Provider
     hashtagSyntax: '#tag',
     rateLimit: { scope: 'account', limit: 1000, windowSec: 3600 },
     publishLeaseSeconds: 60,
+    publishTimeoutSeconds: 30, // 30 < 60
     supportsIdempotencyKey,
     supportsRecentPostLookup,
     supportsMetrics,
@@ -130,6 +134,17 @@ export function createFakeProvider(config: FakeConfig = {}): { adapter: Provider
           // The provider actually created the post... but the response was lost.
           record(input.account.providerAccountId, input.post, id);
           throw new AmbiguousFailure({ mode: 'accept_then_timeout' });
+        case 'timeout_no_record':
+          // Sent, but the post was NOT created and we never got a response. recentPosts finds nothing.
+          throw new AmbiguousFailure({ mode: 'timeout_no_record' });
+        case 'body_error':
+          // The transport returned HTTP 200 but the body said error; a correct adapter classifies
+          // this as a failure and does NOT record a post.
+          throw new NormalizedError(mode.code ?? 'content_rejected', 'provider returned 200 with an error body', { httpStatus: 200, body: { error: 'InvalidRequest' } });
+        case 'accept_then_reject':
+          // The provider actually created the post, then returned an error response.
+          record(input.account.providerAccountId, input.post, id);
+          throw new NormalizedError(mode.code ?? 'content_rejected', 'provider rejected after accepting', { httpStatus: 400 });
         case 'fail':
           throw new NormalizedError(mode.code, mode.reason ?? `fake ${mode.code}`, { mode }, mode.retryAfterSec);
       }

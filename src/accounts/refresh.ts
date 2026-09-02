@@ -31,7 +31,11 @@ export function needsRefresh(accessExpiresAt: Date | null, issuedAt: Date, now: 
 }
 
 function classifyRefreshFailure(e: unknown): UnhealthyStatus {
-  if (e instanceof NormalizedError && /revoke|invalid_grant/i.test(String(e.providerRaw))) return 'revoked';
+  // Fail safe: only an EXPLICIT, adapter-set revocation flag maps to 'revoked'. Any unknown or
+  // ambiguous error is 'auth_expired' (reconnect), which — unlike an explicit disconnect — leaves
+  // the account's queued targets SCHEDULED so they resume if the user reconnects in time. Guessing
+  // 'revoked' from an error string could wrongly strand a customer's queue.
+  if (e instanceof NormalizedError && e.revoked === true) return 'revoked';
   return 'auth_expired';
 }
 

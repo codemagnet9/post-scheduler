@@ -4,6 +4,7 @@
 import { sql } from 'drizzle-orm';
 import type { Tx } from '../db/tenant';
 import type { Credentials } from '../providers/types';
+import { pgArray, toTs } from '../db/index';
 import { encrypt, decrypt, currentKeyId } from './crypto';
 
 type Row = Record<string, unknown>;
@@ -29,7 +30,7 @@ export async function storeTokens(
       key_id, scopes, access_expires_at, refresh_expires_at
     ) values (
       ${params.connectedAccountId}, ${params.workspaceId}, ${access.ciphertext}, ${refresh?.ciphertext ?? null},
-      ${access.keyId}, ${c.scopes ?? []}, ${c.accessExpiresAt ?? null}, ${c.refreshExpiresAt ?? null}
+      ${access.keyId}, ${pgArray(c.scopes ?? [])}::text[], ${toTs(c.accessExpiresAt)}, ${toTs(c.refreshExpiresAt)}
     )
     on conflict (connected_account_id) do update set
       access_token_ciphertext  = excluded.access_token_ciphertext,
@@ -41,9 +42,11 @@ export async function storeTokens(
 }
 
 export async function loadTokens(tx: Tx, connectedAccountId: string): Promise<LoadedTokens | null> {
+  // NOTE: drizzle's execute returns timestamptz columns as STRINGS, not Dates — coerce here so
+  // callers (needsRefresh) can do Date math.
   const r = rows<{
     access_token_ciphertext: Buffer; refresh_token_ciphertext: Buffer | null; key_id: string;
-    scopes: string[]; access_expires_at: Date | null; refresh_expires_at: Date | null; updated_at: Date;
+    scopes: string[]; access_expires_at: string | null; refresh_expires_at: string | null; updated_at: string;
   }>(await tx.execute(sql`
     select access_token_ciphertext, refresh_token_ciphertext, key_id, scopes,
            access_expires_at, refresh_expires_at, updated_at
@@ -53,16 +56,18 @@ export async function loadTokens(tx: Tx, connectedAccountId: string): Promise<Lo
   const t = r[0];
   const accessToken = decrypt(Buffer.from(t.access_token_ciphertext), t.key_id);
   const refreshToken = t.refresh_token_ciphertext ? decrypt(Buffer.from(t.refresh_token_ciphertext), t.key_id) : undefined;
+  const accessExpiresAt = t.access_expires_at ? new Date(t.access_expires_at) : null;
+  const refreshExpiresAt = t.refresh_expires_at ? new Date(t.refresh_expires_at) : null;
   return {
     credentials: {
       accessToken,
       refreshToken,
       scopes: t.scopes,
-      accessExpiresAt: t.access_expires_at ?? undefined,
-      refreshExpiresAt: t.refresh_expires_at ?? undefined,
+      accessExpiresAt: accessExpiresAt ?? undefined,
+      refreshExpiresAt: refreshExpiresAt ?? undefined,
     },
-    accessExpiresAt: t.access_expires_at,
-    issuedAt: t.updated_at,
+    accessExpiresAt,
+    issuedAt: new Date(t.updated_at),
     keyId: t.key_id,
   };
 }

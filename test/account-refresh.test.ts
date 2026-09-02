@@ -79,4 +79,35 @@ describe('permanent refresh failure', () => {
       expect(events).toHaveLength(1); // notified once, not twice
     });
   });
+
+  it('an UNKNOWN/ambiguous error is auth_expired (never revoked) and leaves queued targets scheduled', async () => {
+    const provider = `fake-unknown-${Date.now()}`;
+    const { adapter } = createFakeProvider({
+      key: provider,
+      // providerRaw even mentions 'invalid_grant' — the old string heuristic would have said
+      // 'revoked'. With the fix, without the explicit revoked flag this must be auth_expired.
+      refresh: async () => { throw new NormalizedError('provider_unavailable', 'weird', 'error: invalid_grant-ish text'); },
+    });
+    registerAdapter(adapter);
+    const { workspaceId, userId, accountId } = await seedAccountWithExpiringToken(provider);
+    const ctx = { workspaceId, userId, role: 'owner' as const };
+
+    // A queued target on this account, as if a post were scheduled to it.
+    const targetId = await withTenant(ctx, async (tx) => {
+      const post = asRows<{ id: string }>(await tx.execute(sql`insert into posts (workspace_id, author_id) values (${workspaceId}, ${userId}) returning id`))[0];
+      return asRows<{ id: string }>(await tx.execute(sql`
+        insert into post_targets (post_id, workspace_id, connected_account_id, state, scheduled_at, publish_due_at)
+        values (${post.id}, ${workspaceId}, ${accountId}, 'scheduled', now() + interval '1 hour', now() + interval '1 hour')
+        returning id`))[0].id;
+    });
+
+    await expect(ensureFreshToken(ctx, provider, accountId)).rejects.toBeInstanceOf(NormalizedError);
+
+    await withTenant(ctx, async (tx) => {
+      const status = asRows<{ status: string }>(await tx.execute(sql`select status from connected_accounts where id = ${accountId}`))[0].status;
+      expect(status).toBe('auth_expired'); // NOT revoked
+      const target = asRows<{ state: string }>(await tx.execute(sql`select state from post_targets where id = ${targetId}`))[0];
+      expect(target.state).toBe('scheduled'); // queue survives — auth_expired never skips
+    });
+  });
 });

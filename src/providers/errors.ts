@@ -22,6 +22,10 @@ export class NormalizedError extends Error {
     public plainMessage: string,
     public providerRaw: unknown,
     public retryAfterSec?: number,
+    // Set to true ONLY when the adapter matched an explicit, documented revocation signal from the
+    // provider. Never inferred from an error string. Drives the fail-safe classification in
+    // accounts/refresh.ts — when false/absent, a refresh failure is auth_expired, not revoked.
+    public revoked: boolean = false,
   ) {
     super(plainMessage);
     this.name = 'NormalizedError';
