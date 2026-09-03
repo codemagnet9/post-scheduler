@@ -3,12 +3,13 @@
 // Enforces the post:create/update/view_drafts abilities and the lifecycle-state gate (only draft /
 // changes_requested are editable).
 import { sql } from 'drizzle-orm';
-import { withTenant, type Tx } from '../db/tenant';
+import { withTenant, SYSTEM_USER_ID, type Tx } from '../db/tenant';
 import { pgArray } from '../db/index';
 import { authorize, type Actor } from '../authz/abilities';
 import { resolveAdapter } from '../providers/registry';
 import { contentFingerprint } from '../providers/fingerprint';
 import { writeAudit } from '../audit/audit';
+import { emitEvent } from '../events/emit';
 import {
   mergeContent, overrideFromRow, renderTarget, canonicalJSON,
   type PostContent, type MediaAssetInfo,
@@ -67,8 +68,11 @@ export async function createDraft(actor: ScopedActor, input: { content?: Partial
   return withTenant({ workspaceId: actor.workspaceId, userId: actor.userId, role: actor.role }, async (tx) => {
     authorize(actor, 'post:create');
     const content = normalizeContent(input.content);
+    // author_id FKs users; an API key acting for a departed creator (or the system) has no human
+    // author -> null, never the non-existent SYSTEM sentinel (which would violate the FK).
+    const authorId = actor.userId && actor.userId !== SYSTEM_USER_ID ? actor.userId : null;
     const post = rows<{ id: string }>(await tx.execute(sql`
-      insert into posts (workspace_id, author_id, status, content) values (${actor.workspaceId}, ${actor.userId}, 'draft', ${JSON.stringify(content)}::jsonb) returning id
+      insert into posts (workspace_id, author_id, status, content) values (${actor.workspaceId}, ${authorId}, 'draft', ${JSON.stringify(content)}::jsonb) returning id
     `))[0];
     for (const accountId of new Set(input.targetAccountIds)) {
       await tx.execute(sql`
@@ -77,7 +81,7 @@ export async function createDraft(actor: ScopedActor, input: { content?: Partial
         on conflict (post_id, connected_account_id) do nothing
       `);
     }
-    await writeAudit(tx, { workspaceId: actor.workspaceId, actorUserId: actor.userId, action: 'post.created', targetType: 'post', targetId: post.id });
+    await writeAudit(tx, { workspaceId: actor.workspaceId, actorUserId: authorId, action: 'post.created', targetType: 'post', targetId: post.id });
     return { postId: post.id };
   });
 }
@@ -104,7 +108,16 @@ export async function updatePost(actor: ScopedActor, postId: string, patch: Part
   return withTenant({ workspaceId: actor.workspaceId, userId: actor.userId, role: actor.role }, async (tx) => {
     const post = await loadPostRow(tx, postId);
     authorize(actor, 'post:update', { authorId: post.author_id ?? undefined });
-    if (!isEditable(post.status)) throw new PostError('not_editable');
+    if (post.status === 'pending_approval') {
+      // Rule (a): editing a post under review VOIDS the approval — back to draft, request canceled,
+      // any recorded approvals cleared. It must be re-submitted.
+      await tx.execute(sql`update approval_requests set status = 'canceled', decided_at = now() where post_id = ${postId} and status = 'pending'`);
+      await tx.execute(sql`delete from approval_decisions where post_id = ${postId}`);
+      await tx.execute(sql`update posts set status = 'draft' where id = ${postId}`);
+      await emitEvent(tx, { workspaceId: actor.workspaceId, aggregateType: 'post', aggregateId: postId, type: 'post.approval_voided', payload: {} });
+    } else if (!isEditable(post.status)) {
+      throw new PostError('not_editable');
+    }
     // Editing shared content only touches the parent; overriding targets are unaffected by the merge.
     const next = { ...post.content, ...patch };
     await tx.execute(sql`update posts set content = ${JSON.stringify(next)}::jsonb, updated_at = now() where id = ${postId}`);
@@ -280,7 +293,9 @@ export async function validatePostService(actor: ScopedActor, postId: string): P
 
     const input: ValidatePostInput = {
       now: new Date(),
-      schedule: { type: post.schedule_type, scheduledAt: post.scheduled_at },
+      // scheduled_at is a STRING from execute() — coerce so the schedule_in_past check (a Date
+      // comparison) actually fires instead of silently comparing string<=Date as NaN.
+      schedule: { type: post.schedule_type, scheduledAt: post.scheduled_at ? new Date(post.scheduled_at) : null },
       targets,
     };
     return validatePost(input);

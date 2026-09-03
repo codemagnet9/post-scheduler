@@ -26,6 +26,16 @@ export async function circuitAllows(provider: string): Promise<boolean> {
   return r[0].state !== 'open';          // closed / half_open allow; open denies (probe already out)
 }
 
+// Read-only view of the breaker, for LOWER-PRIORITY callers (analytics ingestion). Unlike
+// circuitAllows it never flips open->half_open, so it never consumes the single probe slot that the
+// publish path should win. Open => denied; closed/half_open => allowed. This is how analytics
+// "respects the same breaker" without ever stealing the publisher's recovery probe.
+export async function circuitClosed(provider: string): Promise<boolean> {
+  const r = rows<{ state: string }>(await db.execute(sql`select state from provider_circuits where provider = ${provider}`));
+  if (!r.length) return true;   // no record => closed
+  return r[0].state !== 'open'; // only a fully-open breaker blocks reads
+}
+
 export async function circuitSuccess(provider: string): Promise<void> {
   await db.execute(sql`
     insert into provider_circuits (provider, state, failure_count) values (${provider}, 'closed', 0)

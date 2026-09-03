@@ -45,6 +45,7 @@ const capabilities: CapabilityDescriptor = {
   supportsMetrics: true,
   supportsDelete: true,
   supportsRevoke: true,
+  supportsMediaUpload: true, // uploadBlob
 };
 
 function pds(c: Credentials): string {
@@ -183,7 +184,12 @@ export const blueskyAdapter: ProviderAdapter = {
       c, 'GET', 'app.bsky.feed.getPosts', undefined, { uris: uri },
     );
     const p = out.posts?.[0] ?? {};
-    return { capturedAt: new Date(), metrics: { likes: p.likeCount ?? 0, shares: p.repostCount ?? 0, comments: p.replyCount ?? 0 }, raw: out };
+    // MAPPING: engagements = likes + reposts + replies; shares = reposts. The AT Protocol exposes NO
+    // impressions/reach/clicks/saves — those stay ABSENT (unavailable), never 0.
+    const likes = p.likeCount ?? 0;
+    const reposts = p.repostCount ?? 0;
+    const replies = p.replyCount ?? 0;
+    return { capturedAt: new Date(), metrics: { engagements: likes + reposts + replies, shares: reposts }, raw: out };
   },
 
   async deletePost({ providerPostId, account }: { providerPostId: string; account: AccountRef }): Promise<void> {

@@ -24,6 +24,7 @@ import { circuitAllows, circuitSuccess, circuitFailure } from './circuit';
 import { providerRateLimit } from './ratelimit';
 import { resolveMediaUrls } from '../media/signed-urls';
 import { getStorage } from '../media/storage';
+import { publishLog } from '../obs/log';
 import type { RenderedPost } from '../providers/types';
 
 type Row = Record<string, unknown>;
@@ -146,17 +147,21 @@ export async function publishClaimed(c: ClaimedTarget): Promise<void> {
     return;
   }
 
+  const plog = publishLog({ post_id: c.postId, target_id: c.id, provider: c.provider, attempt: c.attempt });
   try {
     // rendered_payload holds STORAGE KEYS (stable, canonicalised); mint ephemeral signed URLs here,
     // at publish time, so the preview==publish guarantee survives signature rotation.
+    const t0 = Date.now();
     const post = await resolveMediaUrls(rendered(c.renderedPayload), getStorage());
     const result = await adapter.publish({ account: { providerAccountId: c.providerAccountId, credentials }, post }, { idempotencyKey: c.idempotencyKey });
     await markPublished(c, result.providerPostId, result.permalink);
+    plog.published(result.providerPostId, Date.now() - t0);
     await circuitSuccess(c.provider);
   } catch (e) {
-    if (e instanceof AmbiguousFailure) { await reconcile(c); return; }
-    if (e instanceof NormalizedError) { await handleNormalizedError(c, e); return; }
+    if (e instanceof AmbiguousFailure) { plog.failed('ambiguous', true); await reconcile(c); return; }
+    if (e instanceof NormalizedError) { plog.failed(e.code, RETRY_POLICY[e.code]?.retryable ?? false); await handleNormalizedError(c, e); return; }
     // Unknown throw during publish: we cannot be sure the post was NOT sent -> treat as ambiguous.
+    plog.failed('unknown', true);
     await reconcile(c);
   }
 }
@@ -164,10 +169,15 @@ export async function publishClaimed(c: ClaimedTarget): Promise<void> {
 // --- outcome writers (all compare-and-set on version) ---
 
 async function markPublished(c: ClaimedTarget, providerPostId: string, permalink?: string): Promise<void> {
+  // Analytics ingestion cursor: schedule the first snapshot at +1h, but ONLY for networks that
+  // actually expose metrics. A network with supportsMetrics=false never gets a metrics_next_at, so
+  // the snapshot worker never wastes a rate-limit token on a provider that has nothing to give.
+  const supportsMetrics = resolveAdapter(c.provider).capabilities.supportsMetrics;
   await withTenant(ctxOf(c), async (tx) => {
     const upd = rows(await tx.execute(sql`
       update post_targets set state = 'published', provider_post_id = ${providerPostId}, provider_permalink = ${permalink ?? null},
-        published_at = now(), lease_expires_at = null, claimed_by = null, failure_code = null, version = version + 1
+        published_at = now(), lease_expires_at = null, claimed_by = null, failure_code = null,
+        metrics_next_at = ${supportsMetrics ? sql`now() + interval '1 hour'` : sql`null`}, version = version + 1
       where id = ${c.id} and state in ('publishing','reconciling') and version = ${c.version}
       returning id
     `));

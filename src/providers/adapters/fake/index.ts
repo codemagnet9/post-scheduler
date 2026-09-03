@@ -10,6 +10,7 @@ import type {
   ProviderAdapter, CapabilityDescriptor, AuthResult, AuthStart, PublishInput,
   PublishResult, RecentPost, RecentPostsQuery, MetricsResult, RenderedPost,
 } from '../../types';
+import type { NormalizedMetrics } from '../../../analytics/normalize';
 
 export type FakeMode =
   | { kind: 'ok' }
@@ -26,6 +27,10 @@ export interface FakeControl {
   store: Map<string, RecentPost[]>;
   publishCalls: number;
   lastAuthState?: string; // set on beginAuthorization when authKind === 'oauth_redirect'
+  // Analytics hooks: what fetchMetrics returns, how many times it was called, and whether it throws.
+  metrics: NormalizedMetrics;
+  metricsCalls: number;
+  metricsError?: FailureCode;
 }
 
 export interface FakeConfig {
@@ -35,6 +40,7 @@ export interface FakeConfig {
   supportsMetrics?: boolean;
   supportsDelete?: boolean;
   supportsRevoke?: boolean;
+  supportsMediaUpload?: boolean;
   authKind?: 'credentials' | 'oauth_redirect';
   // Test hook: refreshCredentials behavior for the refresh-worker tests.
   refresh?: (c: import('../../types').Credentials) => Promise<import('../../types').Credentials>;
@@ -51,8 +57,12 @@ export function createFakeProvider(config: FakeConfig = {}): { adapter: Provider
   const supportsMetrics = config.supportsMetrics ?? true;
   const supportsDelete = config.supportsDelete ?? true;
   const supportsRevoke = config.supportsRevoke ?? true;
+  const supportsMediaUpload = config.supportsMediaUpload ?? false;
 
-  const control: FakeControl = { mode: { kind: 'ok' }, store: new Map(), publishCalls: 0 };
+  const control: FakeControl = {
+    mode: { kind: 'ok' }, store: new Map(), publishCalls: 0,
+    metrics: { impressions: 100, reach: 80, engagements: 13, clicks: 5, saves: 2, shares: 1 }, metricsCalls: 0,
+  };
 
   const capabilities: CapabilityDescriptor = {
     provider: key,
@@ -80,6 +90,7 @@ export function createFakeProvider(config: FakeConfig = {}): { adapter: Provider
     supportsMetrics,
     supportsDelete,
     supportsRevoke,
+    supportsMediaUpload,
   };
 
   function record(accountId: string, post: RenderedPost, providerPostId: string): void {
@@ -161,7 +172,9 @@ export function createFakeProvider(config: FakeConfig = {}): { adapter: Provider
     ...(supportsMetrics
       ? {
           async fetchMetrics(): Promise<MetricsResult> {
-            return { capturedAt: new Date(), metrics: { impressions: 100, likes: 10, comments: 2, shares: 1 } };
+            control.metricsCalls += 1;
+            if (control.metricsError) throw new NormalizedError(control.metricsError, `fake metrics ${control.metricsError}`, {});
+            return { capturedAt: new Date(), metrics: control.metrics };
           },
         }
       : {}),
@@ -179,6 +192,14 @@ export function createFakeProvider(config: FakeConfig = {}): { adapter: Provider
       ? {
           async revokeAuthorization(): Promise<void> {
             /* no-op for the fake */
+          },
+        }
+      : {}),
+
+    ...(supportsMediaUpload
+      ? {
+          async uploadMedia(): Promise<{ ref: unknown }> {
+            return { ref: { fake: true } };
           },
         }
       : {}),

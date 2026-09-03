@@ -1,7 +1,7 @@
 // src/media/service.ts
 // Upload orchestration, probing, and lifecycle (delete + scrub + reference counting + cleanup).
 import { sql } from 'drizzle-orm';
-import { withTenant, type TenantContext, type Tx } from '../db/tenant';
+import { withTenant, SYSTEM_USER_ID, type TenantContext, type Tx } from '../db/tenant';
 import { authorize, type Actor } from '../authz/abilities';
 import { getStorage } from './storage';
 import { sniffMimeType, MIME_TO_KIND, type SniffedMime } from './sniff';
@@ -30,9 +30,11 @@ export async function createUpload(actor: ScopedActor, input: { filename: string
     authorize(actor, 'media:upload');
     const kind = (MIME_TO_KIND[input.declaredType as SniffedMime] ?? 'image') as 'image' | 'video' | 'gif';
     if (input.byteSize > MAX_BYTES[kind]) throw new MediaError('too_large');
+    // uploaded_by FKs users; an API key with no human behind it uploads as null, not the sentinel.
+    const uploadedBy = actor.userId && actor.userId !== SYSTEM_USER_ID ? actor.userId : null;
     const asset = rows<{ id: string }>(await tx.execute(sql`
       insert into media_assets (workspace_id, uploaded_by, kind, storage_key, original_filename, mime_type, byte_size, status)
-      values (${actor.workspaceId}, ${actor.userId}, ${kind}, ${'pending'}, ${input.filename}, ${input.declaredType}, ${input.byteSize}, 'uploading')
+      values (${actor.workspaceId}, ${uploadedBy}, ${kind}, ${'pending'}, ${input.filename}, ${input.declaredType}, ${input.byteSize}, 'uploading')
       returning id
     `))[0];
     const storageKey = `uploads/${actor.workspaceId}/${asset.id}`;
@@ -150,5 +152,26 @@ export async function cleanupOrphans(maint: { transaction: <T>(fn: (tx: Tx) => P
       await tx.execute(sql`delete from media_assets where id = ${o.id}`);
     }
     return orphans.length;
+  });
+}
+
+// Variant retention: once a post has published, its per-network renditions can be regenerated on
+// demand and needn't be stored. Drop variants older than `days` whose asset is no longer referenced
+// by any not-yet-published post (draft..publishing). The source asset itself is kept for history.
+export async function retainVariants(maint: { transaction: <T>(fn: (tx: Tx) => Promise<T>) => Promise<T> }, days = 30): Promise<number> {
+  return maint.transaction(async (tx) => {
+    const stale = rows<{ storage_key: string }>(await tx.execute(sql`
+      delete from media_variants v
+      where v.created_at < now() - make_interval(days => ${days})
+        and not exists (
+          select 1 from posts p
+          where p.workspace_id = v.workspace_id
+            and p.status in ('draft','changes_requested','pending_approval','approved','scheduled','publishing')
+            and jsonb_exists(p.content->'media', v.media_asset_id::text)
+        )
+      returning storage_key
+    `));
+    for (const v of stale) await getStorage().deleteObject(v.storage_key).catch(() => undefined);
+    return stale.length;
   });
 }

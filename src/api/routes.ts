@@ -11,6 +11,13 @@ import * as connect from '../accounts/connect';
 import { disconnectAccount } from '../accounts/disconnect';
 import * as posts from '../posts/service';
 import * as media from '../media/service';
+import * as approvals from '../approvals/service';
+import * as comments from '../comments/service';
+import * as prefs from '../notifications/preferences';
+import * as inbox from '../notifications/inbox';
+import * as analytics from '../analytics/service';
+import * as apikeys from './keys';
+import { schedulePost } from '../scheduling/schedule';
 import type { PostContent } from '../posts/content';
 import type { Role } from '../authz/abilities';
 
@@ -110,5 +117,33 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     scoped.post('/workspaces/:workspaceId/media', (req) => media.createUpload(req.tenant!, body<{ filename: string; declaredType: string; byteSize: number }>(req)));
     scoped.post('/workspaces/:workspaceId/media/:assetId/finalize', (req) => media.finalizeUpload(req.tenant!, (req.params as { assetId: string }).assetId));
     scoped.delete('/workspaces/:workspaceId/media/:assetId', (req) => media.deleteMedia(req.tenant!, (req.params as { assetId: string }).assetId));
+
+    // Scheduling + approvals. Editors lack post:schedule, so /schedule 403s for them — the gate.
+    scoped.post('/workspaces/:workspaceId/posts/:postId/schedule', (req) => schedulePost(req.tenant!, postId(req)));
+    scoped.post('/workspaces/:workspaceId/posts/:postId/submit', (req) => approvals.submitForApproval(req.tenant!, postId(req)));
+    scoped.post('/workspaces/:workspaceId/posts/:postId/approve', (req) => approvals.approve(req.tenant!, postId(req)));
+    scoped.post('/workspaces/:workspaceId/posts/:postId/request-changes', (req) => approvals.requestChanges(req.tenant!, postId(req), body<{ note?: string }>(req).note));
+
+    // Comments + mentions.
+    scoped.post('/workspaces/:workspaceId/posts/:postId/comments', (req) => comments.addComment(req.tenant!, postId(req), body<{ body: string; mentions?: string[] }>(req).body, body<{ body: string; mentions?: string[] }>(req).mentions ?? []));
+    scoped.get('/workspaces/:workspaceId/posts/:postId/comments', (req) => comments.listComments(req.tenant!, postId(req)));
+
+    // Notifications: inbox + preferences matrix.
+    scoped.get('/workspaces/:workspaceId/notifications', (req) => inbox.listNotifications(req.tenant!));
+    scoped.put('/workspaces/:workspaceId/notifications/:id/read', (req) => inbox.markNotificationRead(req.tenant!, (req.params as { id: string }).id));
+    scoped.get('/workspaces/:workspaceId/notification-preferences', (req) => prefs.getPreferencesMatrix(req.tenant!));
+    scoped.put('/workspaces/:workspaceId/notification-preferences', (req) => prefs.setPreference(req.tenant!, body<{ event: prefs.NotificationEvent; channel: prefs.Channel; enabled: boolean }>(req).event, body<{ event: prefs.NotificationEvent; channel: prefs.Channel; enabled: boolean }>(req).channel, body<{ event: prefs.NotificationEvent; channel: prefs.Channel; enabled: boolean }>(req).enabled));
+
+    // Analytics: the dashboard read models, plus CSV export as a background job (poll status for the link).
+    const range = (req: FastifyRequest) => analytics.parseRange(req.query as { from?: string; to?: string });
+    scoped.get('/workspaces/:workspaceId/analytics', (req) => analytics.dashboard(req.tenant!, range(req)));
+    scoped.post('/workspaces/:workspaceId/analytics/exports', (req) => analytics.requestExport(req.tenant!, range(req)));
+    scoped.get('/workspaces/:workspaceId/analytics/exports/:id', (req) => analytics.exportStatus(req.tenant!, (req.params as { id: string }).id));
+    scoped.post('/workspaces/:workspaceId/analytics/backfill', (req) => analytics.backfill(req.tenant!));
+
+    // Developer console: API keys (create returns the plaintext ONCE). Owner-only, enforced in the service.
+    scoped.get('/workspaces/:workspaceId/api-keys', (req) => apikeys.listApiKeys(req.tenant!));
+    scoped.post('/workspaces/:workspaceId/api-keys', (req) => apikeys.createApiKey(req.tenant!, body<{ name: string; scopes: apikeys.Scope[]; rateLimitPerMin?: number }>(req)));
+    scoped.delete('/workspaces/:workspaceId/api-keys/:keyId', (req) => apikeys.revokeApiKey(req.tenant!, (req.params as { keyId: string }).keyId));
   });
 }

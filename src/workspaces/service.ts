@@ -5,6 +5,7 @@ import { withUser, withTenant } from '../db/tenant';
 import { authorize, type Actor, type Role } from '../authz/abilities';
 import { generateOpaqueToken, hashToken } from '../auth/tokens';
 import { writeAudit } from '../audit/audit';
+import { getEmailProvider } from '../notifications/email';
 
 export class WorkspaceError extends Error {
   constructor(code: string) { super(code); this.name = 'WorkspaceError'; }
@@ -22,7 +23,8 @@ function slugify(name: string): string {
 }
 
 async function sendInviteEmail(email: string, token: string): Promise<void> {
-  console.info(`[email:invite] -> ${email}`, { token }); // Phase 8 wires real delivery.
+  const link = `${process.env.APP_URL ?? ''}/invitations/accept?token=${token}`;
+  await getEmailProvider().send({ to: email, subject: "You've been invited to a workspace", text: `Join the workspace:\n\n${link}` }).catch(() => undefined);
 }
 
 // --- creation & switching (user-scoped, no existing workspace context) ---

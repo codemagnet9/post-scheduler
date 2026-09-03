@@ -1,19 +1,75 @@
+# docker-compose.yml — local development topology. Mirrors production roles: Postgres, object storage
+# (MinIO stands in for S3/R2 locally), a one-shot migrator, the web API, and workers that scale
+# independently of web. There is NO Redis — rate limits, the job queue (graphile-worker), and circuit
+# breakers all live in Postgres by design.
+#
+# Secrets here are LOCAL-ONLY throwaways. Generate a real keyring for anything shared:
+#   node -e "console.log(JSON.stringify({v1:require('crypto').randomBytes(32).toString('base64')}))"
 services:
   postgres:
     image: postgres:16
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: meridian_admin
+      POSTGRES_PASSWORD: localdev
       POSTGRES_DB: meridian
-    ports:
-      - "5432:5432"
-    volumes:
-      - meridian_pg:/var/lib/postgresql/data
+    ports: ["5433:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d meridian"]
-      interval: 3s
+      test: ["CMD-SHELL", "pg_isready -U meridian_admin -d meridian"]
+      interval: 5s
       timeout: 3s
       retries: 20
 
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: meridian
+      MINIO_ROOT_PASSWORD: localdev-minio
+    ports: ["9000:9000", "9001:9001"]
+    volumes: ["miniodata:/data"]
+
+  # One-shot: applies db/schema.sql + migrations, then sets the app role's password. Runs as the
+  # ADMIN role (owns the schema); the app itself never gets DDL rights.
+  migrate:
+    build: .
+    command: ["npx", "tsx", "scripts/migrate.ts"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment: &appenv
+      DATABASE_URL: postgres://meridian_app:app-localdev@postgres:5432/meridian
+      DATABASE_URL_ADMIN: postgres://meridian_admin:localdev@postgres:5432/meridian
+      MERIDIAN_KEYRING: '{"v1":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}'
+      MERIDIAN_KEY_CURRENT: v1
+      ACCESS_TOKEN_SECRET: local-access-secret-change-me
+      STORAGE_BACKEND: s3
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: meridian
+      S3_REGION: auto
+      S3_ACCESS_KEY_ID: meridian
+      S3_SECRET_ACCESS_KEY: localdev-minio
+      S3_FORCE_PATH_STYLE: "true"
+
+  web:
+    build: .
+    command: ["npx", "tsx", "src/server.ts"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    environment: *appenv
+    ports: ["3000:3000"]
+    # Web does NOT need admin DB creds in production; local shares the env for convenience.
+
+  # Workers scale independently — bump `replicas` (or `docker compose up --scale worker=4`). Each runs
+  # the full crontab; graphile-worker + SKIP LOCKED means N workers cooperate without double-publishing.
+  worker:
+    build: .
+    command: ["npx", "tsx", "src/worker.ts"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    environment: *appenv
+    deploy:
+      replicas: 2
+
 volumes:
-  meridian_pg:
+  pgdata:
+  miniodata:

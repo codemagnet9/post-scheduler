@@ -54,6 +54,16 @@ export interface VariantRenderer {
   render(source: Buffer, spec: VariantSpec): Promise<{ bytes: Buffer; width: number; height: number; mimeType: string; durationSec?: number }>;
 }
 
+// Injectable renderer: production wires sharp/ffmpeg at boot (media/bootstrap.ts); tests inject a fake.
+let renderer: VariantRenderer | null = null;
+export function setVariantRenderer(r: VariantRenderer | null): void {
+  renderer = r;
+}
+export function getVariantRenderer(): VariantRenderer {
+  if (!renderer) throw new Error('no variant renderer configured (sharp/ffmpeg in production, injected in tests)');
+  return renderer;
+}
+
 // Return the storage key of the variant for (asset, spec), generating and caching it on first miss.
 export async function ensureVariant(
   tx: Tx,

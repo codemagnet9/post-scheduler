@@ -44,6 +44,7 @@ const capabilities: CapabilityDescriptor = {
   supportsMetrics: false,
   supportsDelete: false,
   supportsRevoke: true,
+  supportsMediaUpload: false, // media referenced by public HTTPS URL, no pre-upload step
 };
 
 function toMessages(post: PublishInput['post']): unknown[] {

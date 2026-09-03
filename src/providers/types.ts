@@ -64,7 +64,8 @@ export interface CapabilityDescriptor {
   // Mirror the optional methods below so the registry can assert flag<->method consistency.
   supportsMetrics: boolean;
   supportsDelete: boolean;
-  supportsRevoke: boolean; // can we revoke the authorization at the provider on disconnect?
+  supportsRevoke: boolean;      // can we revoke the authorization at the provider on disconnect?
+  supportsMediaUpload: boolean; // does the network need media pre-uploaded (e.g. Bluesky uploadBlob)?
 }
 
 // --- authorization: a discriminated union so both OAuth-redirect and credential-paste fit ---
@@ -135,7 +136,9 @@ export interface PublishResult { providerPostId: string; permalink?: string; raw
 
 export interface MetricsResult {
   capturedAt: Date;
-  metrics: Record<string, number>; // normalized: impressions, likes, comments, shares, ...
+  // The COMMON shape (src/analytics/normalize.ts). A field the network does not supply is ABSENT
+  // or null — never 0. Each adapter documents its own field mapping in its fetchMetrics.
+  metrics: import('../analytics/normalize').NormalizedMetrics;
   raw?: unknown;
 }
 

@@ -52,8 +52,15 @@ export class MemoryStorage implements StorageAdapter {
 
 let current: StorageAdapter = new MemoryStorage();
 export function getStorage(): StorageAdapter {
+  // A silently in-memory media store in production loses every upload on restart. Never allow it.
+  if (process.env.NODE_ENV === 'production' && current instanceof MemoryStorage) {
+    throw new Error('MemoryStorage cannot be used in production — configure an S3/R2 StorageAdapter (STORAGE_BACKEND=s3)');
+  }
   return current;
 }
 export function setStorage(s: StorageAdapter): void {
   current = s;
+}
+export function usingMemoryStorage(): boolean {
+  return current instanceof MemoryStorage;
 }

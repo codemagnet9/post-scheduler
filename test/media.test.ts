@@ -6,12 +6,14 @@ import { withTenant, type TenantContext } from '../src/db/tenant';
 import { createWorkspace } from '../src/workspaces/service';
 import { sniffMimeType } from '../src/media/sniff';
 import { getStorage } from '../src/media/storage';
-import { ensureVariant, type VariantRenderer, type VariantSpec } from '../src/media/variants';
+import { ensureVariant, setVariantRenderer, type VariantRenderer, type VariantSpec } from '../src/media/variants';
 import { resumableUpload, type ProviderChunkBackend } from '../src/media/chunked-upload';
 import { createUpload, finalizeUpload, deleteMedia, MediaError } from '../src/media/service';
 import { validatePost, type ValidateTargetInput } from '../src/posts/validate';
 import { createFakeProvider } from '../src/providers/adapters/fake';
-import { createDraft, setOverride } from '../src/posts/service';
+import { registerAdapter } from '../src/providers/registry';
+import { schedulePost } from '../src/scheduling/schedule';
+import { createDraft, setOverride, setSchedule } from '../src/posts/service';
 import { asRows } from './helpers/db';
 
 let seq = 0;
@@ -171,5 +173,33 @@ describe('media lifecycle', () => {
 
     await expect(deleteMedia(actor, assetId)).rejects.toBeInstanceOf(MediaError);
     expect(asRows(await withTenant(ctx, (tx) => tx.execute(sql`select id from media_assets where id = ${assetId}`)))).toHaveLength(1); // still there
+  });
+});
+
+describe('schedule selects the network variant (Phase 7 wiring)', () => {
+  it('freezes the VARIANT storage key into rendered_payload, not the original asset key', async () => {
+    const provider = `sq-${uniq()}`;
+    const built = createFakeProvider({ key: provider });
+    // A 1:1-only network so a 16:9 source needs a crop variant.
+    const adapter = { ...built.adapter, capabilities: { ...built.adapter.capabilities, permittedAspectRatios: [{ w: 1, h: 1 }], aspectRatioTolerance: 0.02 } };
+    registerAdapter(adapter);
+    setVariantRenderer({ async render(_s, spec) { return { bytes: Buffer.from('variant'), width: spec.targetWidth, height: spec.targetHeight, mimeType: spec.mimeType }; } });
+
+    const ctx = await ws();
+    const actor = ctx;
+    const accId = asRows<{ id: string }>(await withTenant(ctx, (tx) => tx.execute(sql`insert into connected_accounts (workspace_id, provider, provider_account_id, timezone, status) values (${ctx.workspaceId}, ${provider}, ${'pa-' + uniq()}, 'UTC', 'active') returning id`)))[0].id;
+    const srcKey = `src/${uniq()}`;
+    const assetId = asRows<{ id: string }>(await withTenant(ctx, (tx) => tx.execute(sql`insert into media_assets (workspace_id, uploaded_by, kind, storage_key, mime_type, width, height, status) values (${ctx.workspaceId}, ${ctx.userId}, 'image', ${srcKey}, 'image/png', 1600, 900, 'ready') returning id`)))[0].id;
+    await getStorage().putObject(srcKey, pngBuffer(1600, 900), 'image/png');
+
+    const { postId } = await createDraft(actor, { content: { text: 'photo', media: [assetId] }, targetAccountIds: [accId] });
+    await setSchedule(actor, postId, { type: 'fixed_instant', scheduledAt: new Date(Date.now() + 86400_000).toISOString() });
+    await schedulePost(actor, postId);
+
+    const payload = asRows<{ rendered_payload: { media: { url: string }[] } }>(await withTenant(ctx, (tx) => tx.execute(sql`select rendered_payload from post_targets where post_id = ${postId}`)))[0].rendered_payload;
+    expect(payload.media).toHaveLength(1);
+    expect(payload.media[0].url).toMatch(/^variants\//);          // the variant, not the source
+    expect(payload.media[0].url).toContain(`${provider}:1:1:crop`);
+    expect(payload.media[0].url).not.toBe(srcKey);
   });
 });

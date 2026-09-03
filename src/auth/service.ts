@@ -6,6 +6,7 @@ import { hashPassword, verifyPassword } from './password';
 import { generateOpaqueToken, hashToken, signAccessToken, verifyAccessToken } from './tokens';
 import { enforce, LIMITS } from './rate-limit';
 import { writeAudit } from '../audit/audit';
+import { getEmailProvider } from '../notifications/email';
 
 const SESSION_TTL_DAYS = 30;
 const MIN_PASSWORD_LEN = 10;
@@ -21,8 +22,10 @@ type Row = Record<string, unknown>;
 const rows = <T = Row>(r: unknown): T[] => r as unknown as T[];
 
 async function sendEmail(to: string, template: string, data: Record<string, unknown>): Promise<void> {
-  // Real delivery is wired to the email provider in Phase 8. For now, hand off to logs.
-  console.info(`[email:${template}] -> ${to}`, data);
+  const subject = template === 'verify-email' ? 'Verify your email' : template === 'password-reset' ? 'Reset your password' : 'Meridian';
+  const link = `${process.env.APP_URL ?? ''}/auth/${template}?token=${data.token as string}`;
+  // Real provider (Resend) in production, FakeEmailProvider in tests — tokens never touch the console.
+  await getEmailProvider().send({ to, subject, text: `${subject}\n\n${link}` }).catch(() => undefined);
 }
 
 async function auditAuthEvent(userId: string, e: { action: string; targetType?: string; targetId?: string; meta?: RequestMeta }): Promise<void> {

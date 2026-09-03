@@ -35,6 +35,12 @@ describe('registry consistency', () => {
     expect(() => assertAdapterConsistency(bad)).toThrow(/publishTimeoutSeconds/);
   });
 
+  it('rejects an adapter that claims media upload without implementing uploadMedia', () => {
+    const { adapter } = createFakeProvider({ supportsMediaUpload: false }); // no uploadMedia method
+    const lying = { ...adapter, capabilities: { ...adapter.capabilities, supportsMediaUpload: true } };
+    expect(() => assertAdapterConsistency(lying)).toThrow(/uploadMedia/);
+  });
+
   it('register/resolve round-trips and rejects unknown providers', () => {
     const { adapter } = createFakeProvider({ key: 'fake-reg' });
     registerAdapter(adapter);

@@ -4,6 +4,8 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     setupFiles: ['./test/setup.ts'],
+    // Truncate all app tables once before the run, so state never leaks across runs.
+    globalSetup: ['./test/global-setup.ts'],
     // Integration tests share one Postgres; run files serially to keep tenant state predictable.
     fileParallelism: false,
     testTimeout: 30000,
