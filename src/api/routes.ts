@@ -17,6 +17,9 @@ import * as prefs from '../notifications/preferences';
 import * as inbox from '../notifications/inbox';
 import * as analytics from '../analytics/service';
 import * as apikeys from './keys';
+import * as summary from '../summary/service';
+import * as board from '../scheduling/board';
+import * as queue from '../scheduling/queue';
 import { schedulePost } from '../scheduling/schedule';
 import type { PostContent } from '../posts/content';
 import type { Role } from '../authz/abilities';
@@ -55,20 +58,56 @@ async function resolveTenant(req: FastifyRequest): Promise<void> {
   req.tenant = { workspaceId, userId, role: rows[0].role };
 }
 
+// The refresh token lives ONLY in an httpOnly cookie — the browser never exposes it to JS, so an XSS
+// bug can steal the 15-minute access token at worst, not the long-lived session. sameSite=lax means a
+// cross-site POST won't carry it (CSRF defence for /auth/refresh); the access token is a Bearer header,
+// immune to CSRF by construction.
+const REFRESH_COOKIE = 'mrdn_rt';
+const refreshCookieOpts = {
+  httpOnly: true, sameSite: 'lax' as const, secure: process.env.NODE_ENV === 'production',
+  path: '/', maxAge: 30 * 24 * 3600,
+};
+function setRefreshCookie(reply: import('fastify').FastifyReply, token: string): void {
+  reply.setCookie(REFRESH_COOKIE, token, refreshCookieOpts);
+}
+
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // --- unauthenticated auth endpoints (rate-limited inside the service) ---
   app.post('/auth/signup', (req, reply) => auth.signUp(body(req), meta(req)).then((r) => reply.send(r)));
-  app.post('/auth/login', (req, reply) => auth.login(body(req), meta(req)).then((r) => reply.send(r)));
+  // login/refresh: set the refresh cookie, return ONLY the access token in the body.
+  app.post('/auth/login', async (req, reply) => {
+    const pair = await auth.login(body(req), meta(req));
+    setRefreshCookie(reply, pair.refreshToken);
+    return reply.send({ accessToken: pair.accessToken });
+  });
+  app.post('/auth/refresh', async (req, reply) => {
+    const fromCookie = (req.cookies as Record<string, string | undefined>)[REFRESH_COOKIE];
+    const token = fromCookie ?? body<{ refreshToken?: string }>(req)?.refreshToken;
+    if (!token) throw req.server.httpErrors.unauthorized();
+    const pair = await auth.refresh(token, meta(req));
+    setRefreshCookie(reply, pair.refreshToken); // rotation: the new token replaces the old cookie
+    return reply.send({ accessToken: pair.accessToken });
+  });
   app.post('/auth/verify-email', (req) => auth.verifyEmail(body<{ token: string }>(req).token));
-  app.post('/auth/refresh', (req) => auth.refresh(body<{ refreshToken: string }>(req).refreshToken, meta(req)));
   app.post('/auth/password/reset-request', (req) => auth.requestPasswordReset(body<{ email: string }>(req).email, meta(req)));
   app.post('/auth/password/reset', (req) => auth.resetPassword(body<{ token: string }>(req).token, body<{ password: string }>(req).password));
 
   // --- authenticated, non-tenant ---
-  app.post('/auth/logout', { preHandler: requireUser }, (req) => auth.logout(req.user!.sessionId));
-  app.post('/auth/logout-all', { preHandler: requireUser }, (req) => auth.logoutEverywhere(req.user!.userId));
+  app.post('/auth/logout', { preHandler: requireUser }, async (req, reply) => {
+    await auth.logout(req.user!.sessionId);
+    reply.clearCookie(REFRESH_COOKIE, { path: '/' });
+    return reply.send({ ok: true });
+  });
+  app.post('/auth/logout-all', { preHandler: requireUser }, async (req, reply) => {
+    await auth.logoutEverywhere(req.user!.userId);
+    reply.clearCookie(REFRESH_COOKIE, { path: '/' });
+    return reply.send({ ok: true });
+  });
+  // The current user, for the shell's user menu (login only returns a token).
+  app.get('/me', { preHandler: requireUser }, (req) =>
+    withUser(req.user!.userId, (tx) => tx.execute(sql`select id, email, name, email_verified_at from users where id = ${req.user!.userId}`)).then((r) => (r as unknown as unknown[])[0]));
   app.get('/workspaces', { preHandler: requireUser }, (req) => workspaces.listMyWorkspaces(req.user!.userId));
-  app.post('/workspaces', { preHandler: requireUser }, (req) => workspaces.createWorkspace(req.user!.userId, body<{ name: string }>(req).name, meta(req)));
+  app.post('/workspaces', { preHandler: requireUser }, (req) => workspaces.createWorkspace(req.user!.userId, body<{ name: string; timezone?: string }>(req).name, { ...meta(req), timezone: body<{ timezone?: string }>(req).timezone }));
   app.post('/invitations/accept', { preHandler: requireUser }, (req) => workspaces.acceptInvite(req.user!.userId, body<{ token: string }>(req).token));
 
   // OAuth callback — authenticated but NOT tenant-scoped: the provider redirects here with just
@@ -98,6 +137,23 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       connect.completeCredentialConnect(req.tenant!, (req.params as { provider: string }).provider, body<{ fields: Record<string, string> }>(req).fields));
     scoped.delete('/workspaces/:workspaceId/connections/:accountId', (req) =>
       disconnectAccount(req.tenant!, (req.params as { accountId: string }).accountId));
+
+    // The shell's live counts, in ONE request (rail badges: queue / approvals / networks).
+    scoped.get('/workspaces/:workspaceId/summary', (req) => summary.getSummary(req.tenant!));
+
+    // Calendar + Queue board (per-target; never rolled up).
+    scoped.get('/workspaces/:workspaceId/calendar', (req) => board.listCalendar(req.tenant!, req.query as { from: string; to: string }));
+    scoped.get('/workspaces/:workspaceId/queue', (req) => board.listQueue(req.tenant!, req.query as { group?: string; provider?: string; authorId?: string; cursor?: string; limit?: number }));
+    scoped.get('/workspaces/:workspaceId/queue-health', (req) => board.queueHealth(req.tenant!));
+    scoped.post('/workspaces/:workspaceId/targets/cancel', (req) => board.cancelTargets(req.tenant!, body<{ targetIds: string[] }>(req).targetIds));
+    scoped.post('/workspaces/:workspaceId/targets/:targetId/reschedule', (req) => board.rescheduleTarget(req.tenant!, (req.params as { targetId: string }).targetId, body<{ localDate: string; localTime: string; zone: string }>(req)));
+    scoped.post('/workspaces/:workspaceId/targets/:targetId/retry', (req) => board.retryTarget(req.tenant!, (req.params as { targetId: string }).targetId));
+
+    // Queue slots (per market): list / add / move / remove — remove & move reflow the market.
+    scoped.get('/workspaces/:workspaceId/slots', (req) => board.listSlots(req.tenant!));
+    scoped.post('/workspaces/:workspaceId/slots', (req) => queue.addSlot(req.tenant!, body<{ market: string; dayOfWeek: number; localTime: string; label?: string }>(req).market, body<{ dayOfWeek: number }>(req).dayOfWeek, body<{ localTime: string }>(req).localTime, body<{ label?: string }>(req).label));
+    scoped.patch('/workspaces/:workspaceId/slots/:slotId', (req) => queue.moveSlot(req.tenant!, (req.params as { slotId: string }).slotId, body<{ dayOfWeek: number }>(req).dayOfWeek, body<{ localTime: string }>(req).localTime));
+    scoped.delete('/workspaces/:workspaceId/slots/:slotId', (req) => queue.removeSlot(req.tenant!, (req.params as { slotId: string }).slotId));
 
     // Composer: account picker, posts CRUD, targets, overrides, schedule, and validation.
     const postId = (req: FastifyRequest) => (req.params as { postId: string }).postId;

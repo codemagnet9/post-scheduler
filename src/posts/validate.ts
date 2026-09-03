@@ -6,6 +6,7 @@
 import type { CapabilityDescriptor, RenderedPost } from '../providers/types';
 import { measureText } from '../providers/validate';
 import { splitIntoThread } from './threads';
+import { resolveTargetInstant } from '../scheduling/time';
 
 export type Severity = 'blocker' | 'warning' | 'info';
 
@@ -33,6 +34,24 @@ export interface ThreadPreview {
   parts: string[];
 }
 
+// What a target will ACTUALLY publish — merged content (the composer must not merge client-side),
+// the publication surface (so a follower-broadcast/channel post is labelled as not-public), and the
+// absolute instant this target resolves to for the current schedule (audience-local => per-market).
+export interface TargetPreview {
+  targetId: string;
+  provider: string;
+  displayName: string;
+  handle: string | null;
+  publicationSurface: CapabilityDescriptor['publicationSurface'];
+  timezone: string;
+  resolvedAt: string | null; // ISO; null until the schedule is complete enough to resolve
+  hasOverride: boolean;
+  text: string;
+  link: string | null;
+  firstComment: string | null;
+  media: { kind: string; altText: string | null }[];
+}
+
 export interface ValidateTargetInput {
   targetId: string;
   provider: string;
@@ -43,11 +62,14 @@ export interface ValidateTargetInput {
   droppedMedia: string[];
   pendingMedia: number;  // referenced assets still uploading/processing (not yet probed) — blocks scheduling
   duplicateWithinDays: number | null; // days since a near-identical post to this account, else null
+  timezone?: string;     // account market zone (for the resolved per-target instant)
+  hasOverride?: boolean; // whether this target carries any per-network override
+  handle?: string | null;
 }
 
 export interface ValidatePostInput {
   now: Date;
-  schedule: { type?: string | null; scheduledAt?: Date | null };
+  schedule: { type?: string | null; scheduledAt?: Date | null; localDate?: string | null; localTime?: string | null };
   targets: ValidateTargetInput[];
 }
 
@@ -55,7 +77,25 @@ export interface ValidationResponse {
   findings: Finding[];
   counts: CharCount[];
   threadPreviews: ThreadPreview[];
+  previews: TargetPreview[];
   canSchedule: boolean; // no blockers
+}
+
+// The absolute instant this target resolves to under the current schedule, or null if not resolvable
+// yet. audience_local resolves per the account's zone (the signature per-market moment).
+function resolvePreviewInstant(schedule: ValidatePostInput['schedule'], timeZone: string): string | null {
+  try {
+    if (schedule.type === 'audience_local') {
+      if (!schedule.localDate || !schedule.localTime) return null;
+      return resolveTargetInstant({ type: 'audience_local', localDate: schedule.localDate, localTime: schedule.localTime }, timeZone).instant.toISOString();
+    }
+    if ((schedule.type === 'fixed_instant' || schedule.type === 'queued') && schedule.scheduledAt) {
+      return resolveTargetInstant({ type: schedule.type, scheduledAt: schedule.scheduledAt }, timeZone).instant.toISOString();
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 function unitWord(unit: CapabilityDescriptor['textUnit']): string {
@@ -71,6 +111,7 @@ export function validatePost(input: ValidatePostInput): ValidationResponse {
   const findings: Finding[] = [];
   const counts: CharCount[] = [];
   const threadPreviews: ThreadPreview[] = [];
+  const previews: TargetPreview[] = [];
 
   // Post-level: a fixed instant in the past can't be scheduled.
   if (input.schedule.type === 'fixed_instant' && input.schedule.scheduledAt && input.schedule.scheduledAt <= input.now) {
@@ -82,6 +123,15 @@ export function validatePost(input: ValidatePostInput): ValidationResponse {
     const { caps, rendered, displayName } = t;
     const count = measureText(rendered.text, caps.textUnit);
     counts.push({ targetId: t.targetId, provider: t.provider, unit: caps.textUnit, count, limit: caps.maxTextLength, remaining: caps.maxTextLength - count });
+
+    previews.push({
+      targetId: t.targetId, provider: t.provider, displayName, handle: t.handle ?? null,
+      publicationSurface: caps.publicationSurface, timezone: t.timezone ?? 'UTC',
+      resolvedAt: resolvePreviewInstant(input.schedule, t.timezone ?? 'UTC'),
+      hasOverride: t.hasOverride ?? false,
+      text: rendered.text, link: rendered.link ?? null, firstComment: rendered.firstComment ?? null,
+      media: rendered.media.map((m) => ({ kind: m.kind, altText: m.altText ?? null })),
+    });
 
     const add = (code: string, severity: Severity, message: string, suggestion?: string) =>
       findings.push({ targetId: t.targetId, provider: t.provider, code, severity, message, suggestion });
@@ -175,5 +225,5 @@ export function validatePost(input: ValidatePostInput): ValidationResponse {
     }
   }
 
-  return { findings, counts, threadPreviews, canSchedule: !findings.some((f) => f.severity === 'blocker') };
+  return { findings, counts, threadPreviews, previews, canSchedule: !findings.some((f) => f.severity === 'blocker') };
 }

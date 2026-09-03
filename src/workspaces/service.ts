@@ -29,19 +29,21 @@ async function sendInviteEmail(email: string, token: string): Promise<void> {
 
 // --- creation & switching (user-scoped, no existing workspace context) ---
 
-export async function createWorkspace(userId: string, name: string, meta: Meta = {}) {
+// opts carries the request meta AND the chosen primary-market timezone (the signup "primary market").
+// Kept as an options object so the route can still pass { ip, userAgent } and older callers pass nothing.
+export async function createWorkspace(userId: string, name: string, opts: { timezone?: string; ip?: string; userAgent?: string } = {}) {
   return withUser(userId, async (tx) => {
     const slug = `${slugify(name)}-${generateOpaqueToken(4)}`;
     const ws = rows<{ id: string }>(await tx.execute(sql`
-      insert into workspaces (name, slug, created_by) values (${name}, ${slug}, ${userId}) returning id
+      insert into workspaces (name, slug, default_timezone, created_by) values (${name}, ${slug}, ${opts.timezone ?? 'UTC'}, ${userId}) returning id
     `));
     const workspaceId = ws[0].id;
     // Establish tenant context for the just-created workspace so the owner-membership insert
     // satisfies the memberships WITH CHECK (workspace_id = app.workspace_id).
     await tx.execute(sql`select set_config('app.workspace_id', ${workspaceId}, true)`);
     await tx.execute(sql`insert into memberships (workspace_id, user_id, role) values (${workspaceId}, ${userId}, 'owner')`);
-    await writeAudit(tx, { workspaceId, workspaceSlug: slug, actorUserId: userId, action: 'workspace.created', targetType: 'workspace', targetId: workspaceId, after: { name, slug }, ip: meta.ip, userAgent: meta.userAgent });
-    await writeAudit(tx, { workspaceId, actorUserId: userId, action: 'membership.added', targetType: 'user', targetId: userId, after: { role: 'owner' }, ip: meta.ip, userAgent: meta.userAgent });
+    await writeAudit(tx, { workspaceId, workspaceSlug: slug, actorUserId: userId, action: 'workspace.created', targetType: 'workspace', targetId: workspaceId, after: { name, slug }, ip: opts.ip, userAgent: opts.userAgent });
+    await writeAudit(tx, { workspaceId, actorUserId: userId, action: 'membership.added', targetType: 'user', targetId: userId, after: { role: 'owner' }, ip: opts.ip, userAgent: opts.userAgent });
     return { workspaceId, slug };
   });
 }
@@ -49,7 +51,7 @@ export async function createWorkspace(userId: string, name: string, meta: Meta =
 export async function listMyWorkspaces(userId: string) {
   return withUser(userId, (tx) =>
     tx.execute(sql`
-      select w.id, w.name, w.slug, m.role from workspaces w
+      select w.id, w.name, w.slug, w.default_timezone, m.role from workspaces w
       join memberships m on m.workspace_id = w.id and m.user_id = ${userId}
       where w.deleted_at is null order by w.created_at
     `),

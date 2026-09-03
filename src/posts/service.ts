@@ -15,6 +15,7 @@ import {
   type PostContent, type MediaAssetInfo,
 } from './content';
 import { validatePost, type ValidatePostInput, type ValidateTargetInput, type ValidationResponse } from './validate';
+import { resolveWallClockToUTC } from '../scheduling/time';
 
 export class PostError extends Error {
   constructor(code: string) { super(code); this.name = 'PostError'; }
@@ -217,15 +218,27 @@ export async function setOverride(actor: ScopedActor, postId: string, targetId: 
   });
 }
 
-export async function setSchedule(actor: ScopedActor, postId: string, schedule: { type: 'fixed_instant' | 'audience_local' | 'queued'; scheduledAt?: string | null; localTime?: string | null; localDate?: string | null; queueMarketTimezone?: string | null }) {
+export async function setSchedule(actor: ScopedActor, postId: string, schedule: { type: 'fixed_instant' | 'audience_local' | 'queued'; scheduledAt?: string | null; localTime?: string | null; localDate?: string | null; queueMarketTimezone?: string | null; fixedTimezone?: string | null }) {
   return withTenant({ workspaceId: actor.workspaceId, userId: actor.userId, role: actor.role }, async (tx) => {
     const post = await loadPostRow(tx, postId);
     authorize(actor, 'post:update', { authorId: post.author_id ?? undefined });
     if (!isEditable(post.status)) throw new PostError('not_editable');
+
+    // A fixed instant given as a wall clock + zone is resolved to its absolute instant HERE, by the
+    // same DST-correct resolver the publisher uses — the browser never converts a wall clock to an
+    // instant, so client and server can never disagree about what "09:30" means.
+    let scheduledAt = schedule.scheduledAt ?? null;
+    if (schedule.type === 'fixed_instant' && !scheduledAt && schedule.fixedTimezone && schedule.localDate && schedule.localTime) {
+      const [y, mo, d] = schedule.localDate.split('-').map(Number);
+      const [h, mi] = schedule.localTime.split(':').map(Number);
+      scheduledAt = resolveWallClockToUTC(schedule.fixedTimezone, y, mo, d, h, mi).instant.toISOString();
+    }
+    // audience_local keeps its wall clock (resolved per target later); a fixed instant clears it.
+    const keepWall = schedule.type === 'audience_local';
     await tx.execute(sql`
-      update posts set schedule_type = ${schedule.type}, scheduled_at = ${schedule.scheduledAt ?? null},
-        scheduled_local_time = ${schedule.localTime ?? null}, scheduled_local_date = ${schedule.localDate ?? null},
-        queue_market_timezone = ${schedule.queueMarketTimezone ?? null}, updated_at = now()
+      update posts set schedule_type = ${schedule.type}, scheduled_at = ${scheduledAt},
+        scheduled_local_time = ${keepWall ? (schedule.localTime ?? null) : null}, scheduled_local_date = ${keepWall ? (schedule.localDate ?? null) : null},
+        queue_market_timezone = ${schedule.type === 'queued' ? (schedule.queueMarketTimezone ?? null) : null}, updated_at = now()
       where id = ${postId}
     `);
     return { ok: true };
@@ -249,9 +262,9 @@ export async function validatePostService(actor: ScopedActor, postId: string): P
     const post = await loadPostRow(tx, postId);
     authorize(actor, isDraftish(post.status) ? 'post:view_drafts' : 'post:view', { authorId: post.author_id ?? undefined });
 
-    const targetRows = rows<{ target_id: string; connected_account_id: string; provider: string; display_name: string | null; handle: string | null; account_status: string; text_override: string | null; link_override: string | null; first_comment_override: string | null; media_override: string[] | null }>(
+    const targetRows = rows<{ target_id: string; connected_account_id: string; provider: string; display_name: string | null; handle: string | null; timezone: string; account_status: string; text_override: string | null; link_override: string | null; first_comment_override: string | null; media_override: string[] | null }>(
       await tx.execute(sql`
-        select pt.id as target_id, pt.connected_account_id, ca.provider, ca.display_name, ca.handle, ca.status as account_status,
+        select pt.id as target_id, pt.connected_account_id, ca.provider, ca.display_name, ca.handle, ca.timezone, ca.status as account_status,
                o.text_override, o.link_override, o.first_comment_override, o.media_override
         from post_targets pt
         join connected_accounts ca on ca.id = pt.connected_account_id
@@ -288,6 +301,8 @@ export async function validatePostService(actor: ScopedActor, postId: string): P
         targetId: t.target_id, provider: t.provider, displayName: t.display_name ?? t.handle ?? caps.displayName,
         caps, accountStatus: t.account_status, rendered, droppedMedia, pendingMedia,
         duplicateWithinDays: dup.length ? dup[0].days : null,
+        timezone: t.timezone, handle: t.handle,
+        hasOverride: t.text_override !== null || t.link_override !== null || t.first_comment_override !== null || t.media_override !== null,
       });
     }
 
@@ -295,7 +310,10 @@ export async function validatePostService(actor: ScopedActor, postId: string): P
       now: new Date(),
       // scheduled_at is a STRING from execute() — coerce so the schedule_in_past check (a Date
       // comparison) actually fires instead of silently comparing string<=Date as NaN.
-      schedule: { type: post.schedule_type, scheduledAt: post.scheduled_at ? new Date(post.scheduled_at) : null },
+      schedule: {
+        type: post.schedule_type, scheduledAt: post.scheduled_at ? new Date(post.scheduled_at) : null,
+        localDate: post.scheduled_local_date, localTime: post.scheduled_local_time,
+      },
       targets,
     };
     return validatePost(input);

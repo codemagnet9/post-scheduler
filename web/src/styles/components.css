@@ -1,0 +1,252 @@
+/* components.css — ported VERBATIM from the approved prototype (the dev-only screen switcher is the
+   only thing dropped; it is not a product component). Cards have no border, shadow or background —
+   structure is whitespace + hairlines. Everything interactive is a pill (999px). Primary buttons are
+   solid --ink with paper text; lavender is the soft/selected state, never the primary action. */
+
+/* ---------- the panel ---------- */
+.app{display:grid; grid-template-columns:var(--rail) minmax(0,1fr);
+  background:var(--bg); border-radius:30px; margin:16px; min-height:calc(100vh - 32px); overflow:hidden}
+@media(max-width:1000px){.app{grid-template-columns:1fr; margin:0; border-radius:0; min-height:100vh}}
+
+/* ---------- rail ---------- */
+.rail{padding:30px 16px 22px; display:flex; flex-direction:column; position:sticky; top:0; height:100vh; overflow-y:auto}
+@media(max-width:1000px){.rail{display:none}}
+.ws{display:flex; align-items:center; gap:11px; padding:6px 10px 22px; cursor:pointer}
+.ws .nm{font-weight:600; font-size:14.5px; letter-spacing:-.025em; line-height:1.15}
+.ws .sub{font-size:11.5px; color:var(--ink-dim); white-space:nowrap; letter-spacing:0}
+.ws .chev{margin-left:auto; color:var(--ink-dim); font-size:12px}
+.railnav{display:flex; flex-direction:column; gap:1px}
+.rgroup{font-size:11.5px; color:var(--ink-dim); padding:20px 10px 7px; font-weight:500; letter-spacing:.02em}
+.rl{display:flex; align-items:center; gap:11px; padding:8px 11px; border-radius:999px; color:var(--ink-2);
+  font-size:14px; font-weight:500; cursor:pointer; transition:background .14s, color .14s}
+.rl:hover{background:var(--surface-2); color:var(--ink)}
+.rl.on{background:var(--brand-wash); color:var(--brand); font-weight:600}
+.rl .ic{width:15px; text-align:center; color:var(--ink-dim); flex:none; font-size:13px}
+.rl.on .ic{color:var(--brand)}
+.rl .ct{margin-left:auto; font-size:12px; color:var(--ink-dim); font-variant-numeric:tabular-nums}
+.rl.on .ct{color:var(--brand)}
+.rail-foot{margin-top:auto; padding-top:16px}
+.ruser{display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:999px; cursor:pointer}
+.ruser:hover{background:var(--surface-2)}
+
+/* ---------- header ---------- */
+.main{min-width:0; display:flex; flex-direction:column; overflow-x:hidden}
+.top{display:flex; align-items:flex-end; gap:20px; flex-wrap:wrap; padding:44px 48px 0}
+.top h1{font-size:clamp(34px,3.6vw,48px)}
+.top .crumb{display:none}
+.top .sp{margin-left:auto; display:flex; align-items:center; gap:9px; padding-bottom:6px}
+.search{display:flex; align-items:center; gap:9px; padding:9px 16px; border-radius:999px;
+  background:var(--surface-2); color:var(--ink-dim); font-size:13.5px; min-width:210px; cursor:pointer}
+.search kbd{margin-left:auto; font-family:"JetBrains Mono",monospace; font-size:11px; opacity:.7}
+.page{padding:34px 48px 64px; display:flex; flex-direction:column; gap:40px; max-width:1460px; width:100%; min-width:0}
+.page > *{min-width:0}
+@media(max-width:1000px){.top{padding:26px 20px 0}.page{padding:22px 20px 56px; gap:28px}}
+
+/* ---------- buttons ---------- */
+.btn{display:inline-flex; align-items:center; justify-content:center; gap:7px; border-radius:999px;
+  font-size:14px; font-weight:600; padding:10px 20px; border:1px solid transparent; cursor:pointer;
+  white-space:nowrap; letter-spacing:-.015em; transition:background .14s, border-color .14s, opacity .14s}
+.btn:active{transform:translateY(.5px)}
+.btn-primary{background:var(--ink); color:var(--bg)}
+.btn-primary:hover{opacity:.86}
+.btn-soft{background:var(--brand-solid); color:var(--brand-ink)}
+.btn-ghost{border-color:var(--line); color:var(--ink); background:transparent}
+.btn-ghost:hover{background:var(--surface-2)}
+.btn-quiet{background:transparent; color:var(--ink-2); padding:8px 12px}
+.btn-quiet:hover{color:var(--ink)}
+.btn-sm{padding:7px 14px; font-size:13px}
+.btn-danger{border-color:var(--line); background:transparent; color:var(--bad)}
+.btn[disabled]{opacity:.5; cursor:not-allowed}
+
+/* ---------- surfaces: space, not boxes ---------- */
+.card{background:transparent; border:0; border-radius:0}
+.card-h{display:flex; align-items:baseline; gap:14px; padding:0 0 18px}
+.card-h h3{font-size:21px; letter-spacing:-.03em}
+.card-h .sp{margin-left:auto}
+.card-b{padding:0}
+.card-b.flush{padding:0}
+
+/* a few things genuinely want an enclosure */
+.enclose, .prev, .np, .apick, .slot, .tip, .sw-panel{border:1px solid var(--line)}
+
+.badge{display:inline-flex; align-items:center; gap:6px; padding:4px 11px; border-radius:999px;
+  font-size:12px; font-weight:600; line-height:1.45; white-space:nowrap}
+.badge .d{width:5px; height:5px; border-radius:50%; background:currentColor; flex:none}
+.b-ok{background:var(--ok-wash); color:var(--ok)}
+.b-warn{background:var(--warn-wash); color:var(--warn)}
+.b-bad{background:var(--bad-wash); color:var(--bad)}
+.b-info{background:var(--info-wash); color:var(--info)}
+.b-mute{background:var(--surface-2); color:var(--ink-dim)}
+
+.av{border-radius:50%; display:grid; place-items:center; color:#fff; flex:none;
+  font-family:"JetBrains Mono",monospace; font-weight:500; letter-spacing:-.04em}
+.av-sq{border-radius:9px}
+
+.inp{width:100%; padding:11px 15px; border-radius:12px; border:1px solid var(--line); background:var(--surface-2);
+  color:var(--ink); font:inherit; font-size:14.5px; transition:border-color .14s, background .14s}
+.inp:hover{border-color:var(--ink-dim)}
+.inp:focus{background:var(--bg)}
+.inp::placeholder{color:var(--ink-dim)}
+label.fl{display:block; font-size:13px; font-weight:500; color:var(--ink-2); margin-bottom:7px}
+.field{margin-bottom:18px}
+
+.seg{display:inline-flex; padding:3px; gap:2px; background:var(--surface-2); border-radius:999px}
+.seg button{border:0; background:transparent; color:var(--ink-dim); font-size:13px; font-weight:600;
+  padding:6px 15px; border-radius:999px; cursor:pointer; letter-spacing:-.015em}
+.seg button.on{background:var(--bg); color:var(--ink)}
+
+.tog{width:40px; height:23px; border-radius:999px; background:var(--surface-3); position:relative; border:0; cursor:pointer; flex:none; transition:background .16s}
+.tog::after{content:""; position:absolute; top:3px; left:3px; width:17px; height:17px; border-radius:50%; background:#fff; transition:transform .16s; box-shadow:0 1px 2px rgba(0,0,0,.2)}
+.tog[aria-pressed="true"]{background:var(--brand)}
+.tog[aria-pressed="true"]::after{transform:translateX(17px)}
+
+/* ---------- tables: hairlines only ---------- */
+table{width:100%; border-collapse:collapse; font-size:14px}
+th{text-align:left; font-size:12px; color:var(--ink-dim); font-weight:500; padding:0 14px 12px;
+  border-bottom:1px solid var(--line); white-space:nowrap; letter-spacing:0}
+th:first-child, td:first-child{padding-left:0}
+th:last-child, td:last-child{padding-right:0}
+td{padding:18px 14px; border-bottom:1px solid var(--line-soft); vertical-align:middle}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--surface-2)}
+.tbl-wrap{overflow-x:auto}
+.num{font-family:"JetBrains Mono",monospace; font-variant-numeric:tabular-nums; letter-spacing:-.02em}
+
+/* ---------- layout ---------- */
+.grid{display:grid; gap:40px; min-width:0}
+.grid > *{min-width:0}
+.g4{grid-template-columns:repeat(4,1fr); gap:0}
+.g3{grid-template-columns:repeat(3,1fr)}
+.g2{grid-template-columns:repeat(2,1fr)}
+.g-2-1{grid-template-columns:1.9fr 1fr}
+.g-1-2{grid-template-columns:1fr 1.9fr}
+@media(max-width:1120px){.g4{grid-template-columns:repeat(2,1fr)} .g-2-1,.g-1-2,.g3{grid-template-columns:1fr}}
+@media(max-width:700px){.g4,.g2{grid-template-columns:1fr}}
+.row{display:flex; align-items:center; gap:10px}
+.wrapf{flex-wrap:wrap}
+
+/* ---------- stats: the headline moment ---------- */
+.stat{padding:0 28px 0 0; border-right:1px solid var(--line); display:flex; flex-direction:column}
+.g4 > .stat:last-child{border-right:0}
+.g4 > .stat:not(:first-child){padding-left:28px}
+@media(max-width:1120px){
+  .g4 > .stat{padding:0 24px 26px 0}
+  .g4 > .stat:nth-child(2n){border-right:0; padding-left:24px}
+  .g4 > .stat:nth-child(2n+1){padding-left:0}
+}
+@media(max-width:700px){.g4 > .stat{border-right:0; padding:0 0 24px}}
+.stat .l{font-size:13px; color:var(--ink-dim); font-weight:500; min-height:2.3em}
+.stat .v{font-size:clamp(38px,4vw,54px); font-weight:600; letter-spacing:-.05em; line-height:1;
+  margin-top:12px; font-variant-numeric:tabular-nums}
+.stat .d{display:inline-flex; align-items:center; gap:5px; font-size:12.5px; font-weight:600; margin-top:12px; white-space:nowrap}
+.stat .row{flex-direction:column; align-items:flex-start; gap:0}
+.stat .row > span{margin-left:0 !important; align-self:flex-start !important; margin-top:16px; opacity:.85}
+.stat svg{width:100%; max-width:132px; height:26px}
+.up{color:var(--ok)} .down{color:var(--bad)}
+
+/* ---------- composer ---------- */
+.compose{display:grid; grid-template-columns:minmax(0,1fr) 372px; gap:44px; align-items:start}
+@media(max-width:1100px){.compose{grid-template-columns:1fr; gap:32px}}
+.compose > *{min-width:0}
+.editor{min-height:190px; width:100%; border:0; background:transparent; color:var(--ink); font:inherit;
+  font-size:19px; line-height:1.6; resize:vertical; outline:none; letter-spacing:-.018em}
+.acct-pick{display:flex; gap:8px; flex-wrap:wrap}
+.apick{display:flex; align-items:center; gap:8px; padding:7px 15px 7px 7px; border-radius:999px;
+  background:transparent; font-size:13px; font-weight:500; cursor:pointer; transition:.14s}
+.apick:hover{border-color:var(--ink-dim)}
+.apick.on{border-color:transparent; background:var(--brand-wash); color:var(--brand); font-weight:600}
+.apick.on::after{content:"✓"; font-size:10px}
+.tabline{display:flex; gap:22px; border-bottom:1px solid var(--line); padding:0; margin-bottom:22px}
+.tabline button{border:0; background:transparent; padding:0 0 13px; font-size:14px; font-weight:500;
+  color:var(--ink-dim); cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px;
+  display:flex; align-items:center; gap:7px}
+.tabline button.on{color:var(--ink); border-bottom-color:var(--ink); font-weight:600}
+.prev{border-radius:18px; background:transparent; padding:17px; margin-bottom:12px}
+.prev .ph{display:flex; gap:10px; align-items:center; margin-bottom:11px}
+.prev .body{font-size:13.6px; color:var(--ink-2); line-height:1.55}
+.prev .media{margin-top:11px; height:128px; border-radius:12px; border:1px dashed var(--line);
+  background:var(--surface-2); display:grid; place-items:center; color:var(--ink-dim); font-size:12px}
+.prev .acts{display:flex; gap:18px; margin-top:12px; color:var(--ink-dim); font-size:12px}
+.hint{display:flex; gap:10px; align-items:flex-start; padding:13px 16px; border-radius:14px;
+  font-size:13.2px; font-weight:500; line-height:1.5}
+.h-warn{background:var(--warn-wash); color:var(--warn)}
+.h-bad{background:var(--bad-wash); color:var(--bad)}
+.h-ok{background:var(--ok-wash); color:var(--ok)}
+.h-info{background:var(--info-wash); color:var(--info)}
+
+/* ---------- calendar ---------- */
+.cal{display:grid; grid-template-columns:repeat(7,minmax(0,1fr))}
+.cal .dh{padding:0 4px 12px; font-size:12px; color:var(--ink-dim); font-weight:500}
+.cal .dc{min-width:0; overflow:hidden; min-height:124px; border-top:1px solid var(--line-soft); padding:10px 4px;
+  display:flex; flex-direction:column; gap:5px}
+.cal .dc:hover{background:var(--surface-2)}
+.cal .dn{align-self:flex-start; flex:none; font-size:13px; color:var(--ink-dim); font-variant-numeric:tabular-nums}
+.cal .dc.today .dn{background:var(--ink); color:var(--bg); border-radius:999px; padding:1px 8px; font-weight:600}
+.cal .dc.off .dn{opacity:.35}
+.ev{display:flex; min-width:0; max-width:100%; align-items:center; gap:6px; padding:5px 9px; border-radius:999px;
+  font-size:11.5px; font-weight:500; background:var(--surface-2); cursor:grab;
+  overflow:hidden; white-space:nowrap; text-overflow:ellipsis}
+.ev .t{font-family:"JetBrains Mono",monospace; font-size:10px; color:var(--ink-dim); flex:none}
+.ev.s-sched{background:var(--brand-wash); color:var(--brand)}
+.ev.s-pub{background:var(--ok-wash); color:var(--ok)}
+.ev.s-appr{background:var(--info-wash); color:var(--info)}
+.ev.s-fail{background:var(--bad-wash); color:var(--bad)}
+.ev.s-draft{background:var(--surface-2); color:var(--ink-dim)}
+
+/* ---------- slots ---------- */
+.slots{display:grid; grid-template-columns:repeat(7,1fr); gap:8px}
+.slotcol{display:flex; flex-direction:column; gap:7px}
+.slotcol .d{font-size:12px; color:var(--ink-dim); text-align:center; padding-bottom:4px}
+.slot{border:1px solid var(--line); border-radius:999px; padding:9px 6px; text-align:center;
+  font-family:"JetBrains Mono",monospace; font-size:11.5px; color:var(--ink-dim); letter-spacing:-.02em}
+.slot.filled{border-color:transparent; background:var(--brand-wash); color:var(--brand); font-weight:500}
+
+/* ---------- charts ---------- */
+.chart-wrap{position:relative}
+.legend{display:flex; gap:20px; flex-wrap:wrap; margin-bottom:20px}
+.lg{display:flex; align-items:center; gap:8px; font-size:13px; color:var(--ink-2); font-weight:500}
+.lg .sw{width:9px; height:9px; border-radius:50%; flex:none}
+.tip{position:absolute; pointer-events:none; opacity:0; transform:translate(-50%,-108%); transition:opacity .1s;
+  background:var(--bg); border-radius:12px; padding:11px 13px; font-size:12.5px; min-width:140px; z-index:5;
+  box-shadow:0 8px 28px -10px rgba(25,25,23,.28)}
+.tip .th{font-size:11.5px; color:var(--ink-dim); margin-bottom:7px}
+.tip .tr{display:flex; align-items:center; gap:8px; margin-top:4px}
+.tip .tr .sw{width:7px;height:7px;border-radius:50%;flex:none}
+.tip .tr .v{margin-left:auto; font-family:"JetBrains Mono",monospace; font-variant-numeric:tabular-nums}
+.heat{display:grid; grid-template-columns:auto repeat(7,1fr); gap:5px; align-items:center}
+.heat .hl{font-size:11.5px; color:var(--ink-dim); padding-right:8px; text-align:right}
+.heat .hc{aspect-ratio:1.7; border-radius:7px; cursor:pointer}
+
+/* ---------- empty ---------- */
+.empty{text-align:center; padding:72px 24px; display:flex; flex-direction:column; align-items:center; gap:12px}
+.empty .ic{width:58px; height:58px; border-radius:999px; background:var(--brand-wash); color:var(--brand); display:grid; place-items:center; font-size:22px}
+.empty h3{font-size:24px}
+.empty p{color:var(--ink-dim); max-width:44ch; font-size:14.5px}
+
+/* ---------- auth / onboarding ---------- */
+.auth{min-height:100vh; display:grid; grid-template-columns:1.05fr .95fr; background:var(--bg); margin:16px; border-radius:30px; overflow:hidden; min-height:calc(100vh - 32px)}
+@media(max-width:940px){.auth{grid-template-columns:1fr; margin:0; border-radius:0} .auth-aside{display:none}}
+.auth-form{display:flex; flex-direction:column; justify-content:center; padding:56px; max-width:540px; width:100%; margin-inline:auto}
+.auth-form h1{font-size:clamp(34px,3.6vw,46px)}
+.auth-aside{position:relative; background:var(--surface-2); overflow:hidden; display:flex; align-items:center; padding:56px}
+.auth-aside h2{font-size:30px}
+.oauth{display:flex; gap:10px}
+.oauth .btn{flex:1}
+.divider{display:flex; align-items:center; gap:14px; margin:22px 0; color:var(--ink-dim); font-size:12.5px}
+.divider::before,.divider::after{content:""; height:1px; background:var(--line); flex:1}
+.steps-bar{display:flex; gap:7px; margin-bottom:30px}
+.sb{height:2px; flex:1; border-radius:2px; background:var(--surface-3)}
+.sb.on{background:var(--ink)}
+.netpick{display:grid; grid-template-columns:repeat(auto-fill,minmax(168px,1fr)); gap:10px}
+.np{display:flex; align-items:center; gap:11px; padding:13px 15px; border-radius:16px;
+  background:transparent; cursor:pointer; transition:.14s; text-align:left}
+.np:hover{border-color:var(--ink-dim)}
+.np.on{border-color:var(--ink)}
+.np .nm{font-size:13.5px; font-weight:600; line-height:1.2; letter-spacing:-.02em}
+.np .rg{font-size:11px; color:var(--ink-dim)}
+
+/* ---------- states: skeletons (functional; built from existing tokens, shaped like content) ---------- */
+@keyframes skel-pulse{0%,100%{opacity:1}50%{opacity:.55}}
+.skel{background:var(--surface-2); border-radius:var(--r); animation:skel-pulse 1.3s ease-in-out infinite}
+.skel-line{height:12px; border-radius:999px; margin:6px 0}
+.skel-row{display:flex; align-items:center; gap:12px; padding:18px 0; border-bottom:1px solid var(--line-soft)}

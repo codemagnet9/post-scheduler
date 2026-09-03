@@ -1,0 +1,33 @@
+/* tokens.css — ported VERBATIM from the approved prototype. Do not re-pick a colour, radius, size or
+   font. The design is LIGHT-ONLY: color-scheme:light only keeps native form controls light even on a
+   dark OS. There is intentionally no dark theme and no prefers-color-scheme block. */
+:root{
+  color-scheme: light only;
+  --paper:#EDEBE7;
+  --bg:#FFFFFF; --bg-alt:#FAF9F7; --surface:#FFFFFF; --surface-2:#F6F5F2; --surface-3:#EFEDE9;
+  --line:#E8E5E0; --line-soft:#F0EEEA;
+  --ink:#191917; --ink-2:#5A5852; --ink-dim:#918F87;
+  --brand:#4B3A9B; --brand-solid:#DDD3F6; --brand-ink:#2A1E63; --brand-wash:#F0EBFC;
+  --ok:#2C7355; --ok-wash:#E6F0EA;
+  --warn:#8A6216; --warn-wash:#F7F0E0;
+  --bad:#A93F37; --bad-wash:#F9EAE8;
+  --info:#4B3A9B; --info-wash:#F0EBFC;
+  --c1:#6B57C9; --c2:#2C7355; --c3:#B0623A; --c4:#8A6216;
+  --grid:rgba(25,25,23,.05);
+  --r:14px; --r-lg:22px;
+  --rail:214px;
+}
+
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0; background:var(--paper); color:var(--ink);
+  font-family:"Instrument Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-size:14.5px; line-height:1.55; -webkit-font-smoothing:antialiased; letter-spacing:-.006em}
+h1,h2,h3,h4{margin:0; font-weight:600; letter-spacing:-.038em; line-height:1.04; text-wrap:balance}
+p{margin:0}
+a{color:inherit; text-decoration:none}
+button{font-family:inherit}
+:focus-visible{outline:2px solid var(--brand); outline-offset:3px; border-radius:6px}
+@media (prefers-reduced-motion: reduce){*{transition-duration:.001ms!important}}
+.mono{font-family:"JetBrains Mono",ui-monospace,Menlo,monospace; font-variant-numeric:tabular-nums; letter-spacing:-.02em}
+.dim{color:var(--ink-dim)}
+.eyebrow{font-size:12px; color:var(--ink-dim); font-weight:500; letter-spacing:0; text-transform:none}

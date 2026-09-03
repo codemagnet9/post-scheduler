@@ -2,6 +2,7 @@
 import 'dotenv/config';
 import Fastify, { type FastifyInstance } from 'fastify';
 import sensible from '@fastify/sensible';
+import cookie from '@fastify/cookie';
 import { registerRoutes } from './api/routes';
 import { registerPublicRoutes } from './api/public-routes';
 import { ApiError, envelope } from './api/errors';
@@ -16,11 +17,20 @@ import { PostError } from './posts/service';
 import { MediaError } from './media/service';
 import { ApprovalError } from './approvals/service';
 import { CommentError } from './comments/service';
+import { RescheduleError } from './scheduling/board';
 import { initMediaBackends } from './media/bootstrap';
 
 export function buildServer(): FastifyInstance {
   const app = Fastify({ logger: true });
   app.register(sensible);
+  app.register(cookie); // parses Cookie headers + reply.setCookie/clearCookie (refresh-token cookie)
+
+  // Every response carries its Fastify request id, so any client error a user sees can quote an id
+  // that appears in our logs. The /v1 API also puts it in the JSON envelope; this covers the console.
+  app.addHook('onSend', (req, reply, payload, done) => {
+    reply.header('x-request-id', req.id);
+    done(null, payload);
+  });
 
   // Map domain errors to HTTP. ForbiddenError => 403 (in-tenant denial); cross-tenant is already
   // a 404 from the tenant resolver, so it never reaches here.
@@ -57,6 +67,9 @@ export function buildServer(): FastifyInstance {
       return reply.badRequest(err.message);
     }
     if (err instanceof CommentError) return err.message === 'not_found' ? reply.notFound(err.message) : reply.badRequest(err.message);
+    // A refused reschedule/retry carries a user-facing reason (e.g. "That time has already passed").
+    // 409 so the client reverts the move and shows err.message verbatim.
+    if (err instanceof RescheduleError) return reply.conflict(err.message);
     return reply.send(err);
   });
 
