@@ -21,3 +21,8 @@ coverage/
 .DS_Store
 .idea/
 .vscode/
+
+# Playwright E2E artifacts
+test-results/
+playwright-report/
+.e2e-worker.pid

@@ -6,7 +6,7 @@ import { db } from '../src/db/index';
 import { withTenant } from '../src/db/tenant';
 import { createWorkspace } from '../src/workspaces/service';
 import { createDraft, updatePost, setSchedule } from '../src/posts/service';
-import { submitForApproval, approve, requestChanges, ApprovalError } from '../src/approvals/service';
+import { submitForApproval, approve, requestChanges, listApprovals, ApprovalError } from '../src/approvals/service';
 import { createFakeProvider } from '../src/providers/adapters/fake';
 import { registerAdapter } from '../src/providers/registry';
 import { ForbiddenError, type Role } from '../src/authz/abilities';
@@ -119,6 +119,58 @@ describe('approval flow', () => {
     await submitForApproval(s.A(s.editor, 'editor'), s.postId);
     await expect(approve(s.A(s.approver, 'approver'), s.postId)).rejects.toBeInstanceOf(ApprovalError);
     expect(await statusOf(s)).toBe('pending_approval'); // still awaiting a valid time
+  });
+
+  // request-changes MUST carry a note — an empty/whitespace note is refused server-side, and the post
+  // stays pending (a bounce with no reason is useless to the editor).
+  it('request changes without a note is refused', async () => {
+    const s = await scenario();
+    await submitForApproval(s.A(s.editor, 'editor'), s.postId);
+    await expect(requestChanges(s.A(s.approver, 'approver'), s.postId, '   ')).rejects.toThrow('note_required');
+    await expect(requestChanges(s.A(s.approver, 'approver'), s.postId, undefined)).rejects.toThrow('note_required');
+    expect(await statusOf(s)).toBe('pending_approval'); // unchanged — the bounce never took
+  });
+
+  describe('the approvals inbox read model (listApprovals)', () => {
+    it('a reviewer sees every pending post; an editor sees only their own; an analyst sees none', async () => {
+      const s = await scenario();
+      await submitForApproval(s.A(s.editor, 'editor'), s.postId);
+
+      const asApprover = await listApprovals(s.A(s.approver, 'approver'));
+      expect(asApprover.map((i) => i.postId)).toContain(s.postId);
+      expect(asApprover.find((i) => i.postId === s.postId)?.requiredApprovals).toBe(1);
+
+      const asEditor = await listApprovals(s.A(s.editor, 'editor'));
+      expect(asEditor.map((i) => i.postId)).toContain(s.postId); // their own submission
+
+      const asAnalyst = await listApprovals(s.A(s.analyst, 'analyst'));
+      expect(asAnalyst).toHaveLength(0);
+    });
+
+    it('flags a post whose scheduled time has passed and a paid promotion needing two approvals', async () => {
+      const past = await scenario({ schedule: 'past' });
+      await submitForApproval(past.A(past.editor, 'editor'), past.postId);
+      const pastItem = (await listApprovals(past.A(past.owner, 'owner'))).find((i) => i.postId === past.postId)!;
+      expect(pastItem.schedulePassed).toBe(true);
+
+      const paid = await scenario({ paid: true });
+      await submitForApproval(paid.A(paid.editor, 'editor'), paid.postId);
+      await approve(paid.A(paid.approver, 'approver'), paid.postId); // 1 of 2 recorded
+      const paidItem = (await listApprovals(paid.A(paid.owner, 'owner'))).find((i) => i.postId === paid.postId)!;
+      expect(paidItem.isPaidPromotion).toBe(true);
+      expect(paidItem.requiredApprovals).toBe(2);
+      expect(paidItem.approvals).toHaveLength(1); // the first approver is shown as having approved
+    });
+
+    it('surfaces an approver who was removed from the workspace mid-request', async () => {
+      const s = await scenario({ paid: true });
+      await submitForApproval(s.A(s.editor, 'editor'), s.postId);
+      await approve(s.A(s.approver, 'approver'), s.postId); // records approver's decision
+      await withTenant(s.A(s.owner, 'owner'), (tx) => tx.execute(sql`delete from memberships where workspace_id = ${s.workspaceId} and user_id = ${s.approver}`));
+      const item = (await listApprovals(s.A(s.owner, 'owner'))).find((i) => i.postId === s.postId)!;
+      const approved = item.approvals.find((a) => a.approverId === s.approver)!;
+      expect(approved.isMember).toBe(false); // legible in the UI as "removed from workspace"
+    });
   });
 
   // (d)

@@ -1,10 +1,13 @@
 // src/api/endpoints.ts — thin typed wrappers over the console API paths.
 import { get, post, put, patch, del, setAccessToken } from './client';
 import type {
-  Account, User, Workspace, WorkspaceSummary,
+  Account, User, Workspace, WorkspaceSummary, Role,
   PostContent, PostDetail, ValidationResponse, OverridePatch, SchedulePatch,
   BoardEvent, Slot, QueueHealth, RescheduleResult,
   AnalyticsDashboard, ProviderGlossaryEntry, ExportJob,
+  ApprovalItem, Comment, Member, Invitation, WorkspaceDetail, WorkspaceSettings,
+  Session, Notification, NotificationPreferenceRow, NotificationChannel,
+  AccountHealth, ProviderCatalog, BeginConnect,
 } from './types';
 
 // --- auth ---
@@ -80,6 +83,68 @@ export const requestAnalyticsExport = (ws: string, params: { from: string; to: s
   post(`/workspaces/${ws}/analytics/exports?${new URLSearchParams(params).toString()}`);
 export const getExportStatus = (ws: string, id: string): Promise<ExportJob> =>
   get(`/workspaces/${ws}/analytics/exports/${id}`);
+
+// --- networks / connected accounts ---
+export const getAccountHealth = (ws: string): Promise<AccountHealth[]> => get<AccountHealth[]>(`/workspaces/${ws}/accounts/health`);
+export const getProviderCatalog = (ws: string): Promise<ProviderCatalog> => get<ProviderCatalog>(`/workspaces/${ws}/provider-catalog`);
+// Start a connect: an OAuth network returns a URL to send the browser to; a credential network returns
+// the fields to collect. Reconnect uses the SAME start — the callback reattaches to the existing row.
+export const startConnect = (ws: string, provider: string): Promise<BeginConnect> => post(`/workspaces/${ws}/connections/${provider}/start`);
+export const completeCredentialConnect = (ws: string, provider: string, fields: Record<string, string>): Promise<{ status: string; accountId: string }> =>
+  post(`/workspaces/${ws}/connections/${provider}/complete`, { fields });
+// Voluntary disconnect: skips queued targets loudly and returns how many — the confirmation surfaces it.
+export const disconnectAccount = (ws: string, accountId: string): Promise<{ skippedTargets: number }> =>
+  del(`/workspaces/${ws}/connections/${accountId}`);
+// The OAuth return: the provider redirects the browser back with ?state&code (or ?error). The backend
+// consumes the single-use state and either reattaches/creates the account or reports the failure; any
+// error carries the request id via ApiError so the user can quote it to support.
+export const finishOAuthConnect = (query: { state?: string; code?: string; error?: string }): Promise<{ status: 'connected' | 'reconnected' | 'denied'; accountId?: string }> => {
+  const q = new URLSearchParams();
+  Object.entries(query).forEach(([k, v]) => { if (v) q.set(k, v); });
+  return get(`/connections/callback?${q.toString()}`);
+};
+
+// --- approvals inbox ---
+export const listApprovals = (ws: string): Promise<ApprovalItem[]> => get<ApprovalItem[]>(`/workspaces/${ws}/approvals`);
+// Approve (and, once the required count is met, schedule) or bounce back for changes. Non-optimistic:
+// callers refetch the list on success rather than assuming the post moved.
+export const approvePost = (ws: string, postId: string): Promise<{ status: string; approvals?: number; required?: number }> =>
+  post(`${base(ws, postId)}/approve`);
+export const requestChanges = (ws: string, postId: string, note: string): Promise<{ status: string }> =>
+  post(`${base(ws, postId)}/request-changes`, { note });
+export const listComments = (ws: string, postId: string): Promise<Comment[]> => get<Comment[]>(`${base(ws, postId)}/comments`);
+export const addComment = (ws: string, postId: string, body: string, mentions: string[] = []): Promise<{ commentId: string }> =>
+  post(`${base(ws, postId)}/comments`, { body, mentions });
+
+// --- team (members + invitations, all through the server's ability layer) ---
+export const listMembers = (ws: string): Promise<Member[]> => get<Member[]>(`/workspaces/${ws}/members`);
+export const listInvitations = (ws: string): Promise<Invitation[]> => get<Invitation[]>(`/workspaces/${ws}/invitations`);
+export const inviteMember = (ws: string, email: string, role: Role): Promise<{ invitationId: string }> =>
+  post(`/workspaces/${ws}/invitations`, { email, role });
+export const changeMemberRole = (ws: string, userId: string, role: Role): Promise<void> =>
+  patch(`/workspaces/${ws}/members/${userId}/role`, { role });
+export const removeMember = (ws: string, userId: string): Promise<void> => del(`/workspaces/${ws}/members/${userId}`);
+export const transferOwnership = (ws: string, toUserId: string): Promise<void> => post(`/workspaces/${ws}/ownership/transfer`, { toUserId });
+export const leaveWorkspace = (ws: string): Promise<void> => post(`/workspaces/${ws}/leave`);
+
+// --- workspace settings + danger zone ---
+export const getWorkspaceDetail = (ws: string): Promise<WorkspaceDetail> => get<WorkspaceDetail>(`/workspaces/${ws}`);
+export const updateWorkspace = (ws: string, patchBody: { name?: string; timezone?: string; settings?: WorkspaceSettings }): Promise<WorkspaceDetail> =>
+  patch(`/workspaces/${ws}`, patchBody);
+// The client must echo the exact workspace name; the server refuses a mismatch (never a silent delete).
+export const deleteWorkspace = (ws: string, confirmName: string): Promise<{ deleted: true }> =>
+  del<{ deleted: true }>(`/workspaces/${ws}`, { confirmName });
+
+// --- security: this user's own sessions ---
+export const listSessions = (): Promise<Session[]> => get<Session[]>('/auth/sessions');
+export const revokeSession = (id: string): Promise<{ ok: true }> => del(`/auth/sessions/${id}`);
+
+// --- notifications ---
+export const listNotifications = (ws: string): Promise<Notification[]> => get<Notification[]>(`/workspaces/${ws}/notifications`);
+export const markNotificationRead = (ws: string, id: string): Promise<{ ok: true }> => put(`/workspaces/${ws}/notifications/${id}/read`, {});
+export const getNotificationPreferences = (ws: string): Promise<NotificationPreferenceRow[]> => get<NotificationPreferenceRow[]>(`/workspaces/${ws}/notification-preferences`);
+export const setNotificationPreference = (ws: string, event: string, channel: NotificationChannel, enabled: boolean): Promise<{ ok: true }> =>
+  put(`/workspaces/${ws}/notification-preferences`, { event, channel, enabled });
 
 // media tray
 export const createUpload = (ws: string, body: { filename: string; declaredType: string; byteSize: number }): Promise<{ assetId: string; uploadUrl: string; storageKey: string }> => post(`/workspaces/${ws}/media`, body);

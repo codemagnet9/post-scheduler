@@ -9,6 +9,7 @@ import * as auth from '../auth/service';
 import * as workspaces from '../workspaces/service';
 import * as connect from '../accounts/connect';
 import { disconnectAccount } from '../accounts/disconnect';
+import * as catalog from '../accounts/catalog';
 import * as posts from '../posts/service';
 import * as media from '../media/service';
 import * as approvals from '../approvals/service';
@@ -103,6 +104,16 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     reply.clearCookie(REFRESH_COOKIE, { path: '/' });
     return reply.send({ ok: true });
   });
+  // Security tab: the caller's own active sessions, and revoke-one. Not tenant-scoped (a session
+  // belongs to a user, not a workspace); the service scopes every query to req.user.userId.
+  app.get('/auth/sessions', { preHandler: requireUser }, (req) => auth.listSessions(req.user!.userId, req.user!.sessionId));
+  app.delete('/auth/sessions/:id', { preHandler: requireUser }, async (req, reply) => {
+    const id = (req.params as { id: string }).id;
+    await auth.revokeSession(req.user!.userId, id);
+    // Revoking your CURRENT session is a logout — clear the cookie so the browser doesn't keep replaying it.
+    if (id === req.user!.sessionId) reply.clearCookie(REFRESH_COOKIE, { path: '/' });
+    return reply.send({ ok: true });
+  });
   // The current user, for the shell's user menu (login only returns a token).
   app.get('/me', { preHandler: requireUser }, (req) =>
     withUser(req.user!.userId, (tx) => tx.execute(sql`select id, email, name, email_verified_at from users where id = ${req.user!.userId}`)).then((r) => (r as unknown as unknown[])[0]));
@@ -120,6 +131,18 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     scoped.addHook('preHandler', requireUser);
     scoped.addHook('preHandler', resolveTenant);
 
+    // Team screen read models + workspace settings.
+    scoped.get('/workspaces/:workspaceId/members', (req) => workspaces.listMembers(req.tenant!));
+    scoped.get('/workspaces/:workspaceId/invitations', (req) => workspaces.listInvitations(req.tenant!));
+    scoped.get('/workspaces/:workspaceId', (req) => workspaces.getWorkspace(req.tenant!));
+    scoped.patch('/workspaces/:workspaceId', (req) => workspaces.updateWorkspace(req.tenant!, body<{ name?: string; timezone?: string; settings?: Record<string, unknown> }>(req), meta(req)));
+    // Danger zone: the client must echo the workspace name to confirm; the service does the delete.
+    scoped.delete('/workspaces/:workspaceId', async (req) => {
+      const confirm = body<{ confirmName?: string }>(req).confirmName;
+      const ws = await workspaces.getWorkspace(req.tenant!);
+      if (confirm !== ws.name) throw req.server.httpErrors.badRequest('confirm_name_mismatch');
+      return workspaces.deleteWorkspace(req.tenant!, meta(req));
+    });
     scoped.post('/workspaces/:workspaceId/invitations', (req) =>
       workspaces.inviteMember(req.tenant!, body<{ email: string; role: Role }>(req).email, body<{ email: string; role: Role }>(req).role, meta(req)));
     scoped.patch('/workspaces/:workspaceId/members/:userId/role', (req) =>
@@ -137,6 +160,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       connect.completeCredentialConnect(req.tenant!, (req.params as { provider: string }).provider, body<{ fields: Record<string, string> }>(req).fields));
     scoped.delete('/workspaces/:workspaceId/connections/:accountId', (req) =>
       disconnectAccount(req.tenant!, (req.params as { accountId: string }).accountId));
+    // Networks screen: per-account health (status, last publish, queued dependents, capability notes)
+    // and the catalog of connectable + coming-soon networks.
+    scoped.get('/workspaces/:workspaceId/accounts/health', (req) => catalog.accountHealth(req.tenant!));
+    scoped.get('/workspaces/:workspaceId/provider-catalog', () => catalog.providerCatalog());
 
     // The shell's live counts, in ONE request (rail badges: queue / approvals / networks).
     scoped.get('/workspaces/:workspaceId/summary', (req) => summary.getSummary(req.tenant!));
@@ -178,6 +205,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     scoped.delete('/workspaces/:workspaceId/media/:assetId', (req) => media.deleteMedia(req.tenant!, (req.params as { assetId: string }).assetId));
 
     // Scheduling + approvals. Editors lack post:schedule, so /schedule 403s for them — the gate.
+    scoped.get('/workspaces/:workspaceId/approvals', (req) => approvals.listApprovals(req.tenant!));
     scoped.post('/workspaces/:workspaceId/posts/:postId/schedule', (req) => schedulePost(req.tenant!, postId(req)));
     scoped.post('/workspaces/:workspaceId/posts/:postId/submit', (req) => approvals.submitForApproval(req.tenant!, postId(req)));
     scoped.post('/workspaces/:workspaceId/posts/:postId/approve', (req) => approvals.approve(req.tenant!, postId(req)));

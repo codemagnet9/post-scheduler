@@ -6,6 +6,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { refreshSession, setAccessToken, setOnUnauthorized, ApiError } from '../api/client';
 import { login as apiLogin, logout as apiLogout, me } from '../api/endpoints';
+import { queryClient } from '../api/queryClient';
 import type { User } from '../api/types';
 
 type Status = 'loading' | 'authed' | 'anon';
@@ -46,7 +47,9 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
 
   const logout = useCallback(async () => {
     await apiLogout().catch(() => undefined);
-    setAccessToken(null);
+    setAccessToken(null);          // drop the in-memory access token
+    queryClient.clear();           // and every cached workspace's data — no leak to the next signer-in
+    localStorage.removeItem('meridian.activeWorkspace');
     setUser(null);
     setStatus('anon');
   }, []);

@@ -1,5 +1,6 @@
 // src/server.ts
 import 'dotenv/config';
+import { pathToFileURL } from 'node:url';
 import Fastify, { type FastifyInstance } from 'fastify';
 import sensible from '@fastify/sensible';
 import cookie from '@fastify/cookie';
@@ -19,6 +20,17 @@ import { ApprovalError } from './approvals/service';
 import { CommentError } from './comments/service';
 import { RescheduleError } from './scheduling/board';
 import { initMediaBackends } from './media/bootstrap';
+
+// Machine code -> the verbatim sentence the Team/Settings UI renders. The last-Owner invariant lives
+// on the server; this is the one place its human wording is authored.
+const WORKSPACE_REASONS: Record<string, string> = {
+  last_owner: 'Cannot demote the last Owner',
+  member_not_found: 'That member is no longer in this workspace',
+  not_a_member: 'You are not a member of this workspace',
+  name_required: 'Workspace name cannot be empty',
+  invitation_invalid: 'That invitation is invalid or has expired',
+  not_found: 'Workspace not found',
+};
 
 export function buildServer(): FastifyInstance {
   const app = Fastify({ logger: true });
@@ -45,8 +57,14 @@ export function buildServer(): FastifyInstance {
       reply.header('Retry-After', String(err.retryAfterSec));
       return reply.tooManyRequests('rate_limited');
     }
-    if (err instanceof AuthError) return reply.unauthorized(err.message);
-    if (err instanceof WorkspaceError) return reply.badRequest(err.message);
+    if (err instanceof AuthError) return err.message === 'session_not_found' ? reply.notFound(err.message) : reply.unauthorized(err.message);
+    if (err instanceof WorkspaceError) {
+      // The service throws a machine code; the HTTP layer is the single place that turns it into the
+      // human sentence the UI renders VERBATIM (so the UI never has to author — or second-guess — the
+      // last-Owner rule itself). not_found is 404; everything else is a 400 with the mapped reason.
+      const reason = WORKSPACE_REASONS[err.message] ?? err.message;
+      return err.message === 'not_found' ? reply.notFound(reason) : reply.badRequest(reason);
+    }
     if (err instanceof DisconnectError) return reply.notFound(err.message);
     if (err instanceof ConnectError) {
       return err.message === 'state_invalid_or_replayed' ? reply.conflict(err.message) : reply.badRequest(err.message);
@@ -93,7 +111,10 @@ export function buildServer(): FastifyInstance {
   return app;
 }
 
-const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1].replace(/\\/g, '/')}`;
+// "Am I the entrypoint?" — compare file URLs via pathToFileURL so the drive letter + slash-count of a
+// Windows path (file:///G:/…) matches import.meta.url. The old hand-built `file://${argv}` never matched
+// on Windows, so `npm start`/`npm run dev` silently no-op'd there; this boots correctly on both.
+const isMain = process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false;
 if (isMain) {
   initMediaBackends(); // storage + sharp/ffmpeg + ffprobe (fails fast if prod is on memory storage)
   const app = buildServer();

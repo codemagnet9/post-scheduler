@@ -9,8 +9,10 @@ import { fakeAdapter } from './fake';
 registerAdapter(blueskyAdapter);
 registerAdapter(lineAdapter);
 
-// The fake provider is only registered in tests, never in production.
-if (process.env.NODE_ENV === 'test') {
+// The fake provider is registered in tests, and in an E2E harness that opts in explicitly with
+// MERIDIAN_ENABLE_FAKE_PROVIDER=1 (the Playwright demo-path run). It is NEVER registered in a normal
+// production boot — a real deploy sets neither flag, so the connect catalog never offers it.
+if (process.env.NODE_ENV === 'test' || process.env.MERIDIAN_ENABLE_FAKE_PROVIDER === '1') {
   registerAdapter(fakeAdapter());
 }
 

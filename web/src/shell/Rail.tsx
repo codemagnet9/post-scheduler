@@ -10,6 +10,8 @@ import { useWorkspace } from '../workspace/WorkspaceProvider';
 import { useAuth } from '../auth/AuthProvider';
 import { Avatar } from '../components/Avatar';
 import { Skeleton } from '../components/states';
+import { CreateWorkspaceModal } from './CreateWorkspaceModal';
+import { useSetupStatus } from '../screens/app/setup/useSetupStatus';
 
 type CountKey = keyof Pick<WorkspaceSummary, 'queue' | 'approvals' | 'networks'>;
 interface NavItem { to: string; label: string; icon: string; end?: boolean; count?: CountKey }
@@ -38,6 +40,7 @@ export function Rail(): JSX.Element {
   const summary = summaryQ.data;
   const [wsOpen, setWsOpen] = useState(false);
   const [userOpen, setUserOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
 
   const countBadge = (key?: CountKey) => {
     if (!key) return null;
@@ -49,14 +52,16 @@ export function Rail(): JSX.Element {
     <aside className="rail">
       {/* workspace switcher */}
       <div style={{ position: 'relative' }}>
-        <div className="ws" onClick={() => setWsOpen((o) => !o)}>
+        <button type="button" className="ws" onClick={() => setWsOpen((o) => !o)}
+          aria-haspopup="menu" aria-expanded={wsOpen} aria-label={`Switch workspace — current: ${active.name}`}
+          style={{ border: 0, font: 'inherit', textAlign: 'left', cursor: 'pointer', width: '100%' }}>
           <Avatar name={active.name} seed={active.id} size={32} square />
           <span>
             <span className="nm">{active.name}</span><br />
             <span className="sub">STUDIO · {summary ? summary.networks : '—'} ACCOUNTS</span>
           </span>
-          <span className="chev">⌄</span>
-        </div>
+          <span className="chev" aria-hidden>⌄</span>
+        </button>
         {wsOpen && (
           <Popover onClose={() => setWsOpen(false)}>
             {workspaces.map((w) => (
@@ -66,8 +71,13 @@ export function Rail(): JSX.Element {
                 <span className="ct" style={{ textTransform: 'capitalize' }}>{w.role}</span>
               </button>
             ))}
+            <button className="rl" style={{ width: '100%', border: 0, background: 'transparent', textAlign: 'left', marginTop: 4, borderTop: '1px solid var(--line-soft)', paddingTop: 10 }}
+              onClick={() => { setWsOpen(false); setCreating(true); }}>
+              <span className="ic">＋</span> Create workspace
+            </button>
           </Popover>
         )}
+        {creating && <CreateWorkspaceModal onClose={() => setCreating(false)} />}
       </div>
 
       {/* nav */}
@@ -86,16 +96,18 @@ export function Rail(): JSX.Element {
 
       {/* foot: setup + user menu */}
       <div className="rail-foot">
-        <NavLink to="/networks" className="rl" style={{ marginBottom: 4 }}><span className="ic">✦</span>Setup guide</NavLink>
+        <SetupGuideLink />
         <div style={{ position: 'relative' }}>
-          <div className="ruser" onClick={() => setUserOpen((o) => !o)}>
+          <button type="button" className="ruser" onClick={() => setUserOpen((o) => !o)}
+            aria-haspopup="menu" aria-expanded={userOpen} aria-label="Account menu"
+            style={{ border: 0, font: 'inherit', textAlign: 'left', cursor: 'pointer', width: '100%' }}>
             <Avatar name={user?.name ?? user?.email ?? '?'} seed={user?.id ?? 'u'} size={30} />
             <span>
               <span style={{ fontSize: 13.5, fontWeight: 600, display: 'block', lineHeight: 1.2, whiteSpace: 'nowrap' }}>{user?.name ?? user?.email ?? 'You'}</span>
               <span className="dim" style={{ fontSize: 11, textTransform: 'capitalize' }}>{active.role}</span>
             </span>
-            <span className="dim" style={{ marginLeft: 'auto' }}>⋯</span>
-          </div>
+            <span className="dim" aria-hidden style={{ marginLeft: 'auto' }}>⋯</span>
+          </button>
           {userOpen && (
             <Popover onClose={() => setUserOpen(false)} above>
               <div style={{ padding: '8px 12px' }}><div style={{ fontSize: 12.5, fontWeight: 600 }}>{user?.name ?? 'Signed in'}</div><div className="dim" style={{ fontSize: 11.5 }}>{user?.email}</div></div>
@@ -108,6 +120,18 @@ export function Rail(): JSX.Element {
         </div>
       </div>
     </aside>
+  );
+}
+
+// The rail's setup guide: tracks how many onboarding steps remain (from real data), and disappears
+// once everything's done — the rail shouldn't nag a fully set-up workspace.
+function SetupGuideLink(): JSX.Element | null {
+  const { doneCount, total, complete, loading } = useSetupStatus();
+  if (loading || complete) return null;
+  return (
+    <NavLink to="/setup" className="rl" style={{ marginBottom: 4 }}>
+      <span className="ic">✦</span>Setup guide<span className="ct">{doneCount}/{total}</span>
+    </NavLink>
   );
 }
 

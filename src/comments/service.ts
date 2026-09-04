@@ -45,6 +45,14 @@ export async function listComments(actor: ScopedActor, postId: string) {
     const p = rows<{ author_id: string | null; status: string }>(await tx.execute(sql`select author_id, status from posts where id = ${postId}`))[0];
     if (!p) throw new CommentError('not_found');
     authorize(actor, viewAbility(p.status), { authorId: p.author_id ?? undefined });
-    return tx.execute(sql`select id, author_id, body, mentions, created_at, edited_at from comments where post_id = ${postId} and deleted_at is null order by created_at`);
+    // Join the author's name/email so the UI can label a comment with a person, not a bare avatar.
+    // LEFT join: a comment from someone since removed from the workspace still renders (name may be null).
+    return tx.execute(sql`
+      select c.id, c.author_id, u.name as author_name, u.email as author_email, c.body, c.mentions, c.created_at, c.edited_at
+      from comments c
+      left join users u on u.id = c.author_id
+      where c.post_id = ${postId} and c.deleted_at is null
+      order by c.created_at
+    `);
   });
 }

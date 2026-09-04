@@ -145,6 +145,34 @@ export async function refresh(rawRefresh: string, meta: RequestMeta): Promise<To
   throw new AuthError('refresh_invalid');
 }
 
+// The Security tab's active-session list. sessions has NO RLS (it's keyed by user, not workspace),
+// so it's queried directly as the app role — scoped to the caller's own user_id, never anyone else's.
+// The caller's current session is flagged so the UI can label it and refuse to revoke it out from
+// under the request.
+export interface SessionRow { id: string; ip: string | null; userAgent: string | null; createdAt: string; lastUsedAt: string | null; expiresAt: string; current: boolean }
+export async function listSessions(userId: string, currentSessionId: string): Promise<SessionRow[]> {
+  const r = rows<{ id: string; ip: string | null; user_agent: string | null; created_at: string; last_used_at: string | null; expires_at: string }>(await db.execute(sql`
+    select id, host(ip) as ip, user_agent, created_at, last_used_at, expires_at from sessions
+    where user_id = ${userId} and revoked_at is null and expires_at > now()
+    order by last_used_at desc nulls last, created_at desc
+  `));
+  return r.map((s) => ({
+    id: s.id, ip: s.ip, userAgent: s.user_agent,
+    createdAt: new Date(s.created_at).toISOString(),
+    lastUsedAt: s.last_used_at ? new Date(s.last_used_at).toISOString() : null,
+    expiresAt: new Date(s.expires_at).toISOString(),
+    current: s.id === currentSessionId,
+  }));
+}
+
+// Revoke ONE session. Scoped to the caller's own user_id, so you can only sign out your own devices.
+export async function revokeSession(userId: string, sessionId: string): Promise<void> {
+  const r = rows(await db.execute(sql`
+    update sessions set revoked_at = now() where id = ${sessionId} and user_id = ${userId} and revoked_at is null returning id
+  `));
+  if (!r.length) throw new AuthError('session_not_found');
+}
+
 export async function logout(sessionId: string): Promise<void> {
   await db.execute(sql`update sessions set revoked_at = now() where id = ${sessionId} and revoked_at is null`);
 }

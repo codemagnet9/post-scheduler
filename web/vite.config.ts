@@ -12,5 +12,8 @@ const proxy = Object.fromEntries(
 export default defineConfig({
   plugins: [react()],
   server: { port: 5173, proxy },
-  test: { environment: 'node', include: ['src/**/*.test.{ts,tsx}'] },
+  // fileParallelism:false runs test files sequentially in one worker. The jsdom component tests are
+  // heavy enough that the parallel worker pool intermittently crashes on some machines; sequential is
+  // stable and the suite is fast either way. Matches the backend's vitest convention.
+  test: { environment: 'node', include: ['src/**/*.test.{ts,tsx}'], fileParallelism: false },
 });

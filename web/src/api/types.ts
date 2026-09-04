@@ -159,3 +159,67 @@ export interface MetricFieldMapping { field: string; status: 'supported' | 'unav
 export interface ProviderGlossaryEntry { provider: string; displayName: string; supportsMetrics: boolean; fields: MetricFieldMapping[]; summary: string }
 
 export interface ExportJob { id: string; status: string; rowCount?: number | null; downloadUrl?: string | null; error?: string | null }
+
+// --- approvals inbox (Phase 5) ---
+// One pending post awaiting review, carrying the four awkward cases as first-class server-computed
+// fields so the UI never has to re-derive a rule: editedSinceSubmit (Phase 8 voids the approval),
+// schedulePassed (the slot lapsed while it waited), requiredApprovals + approvals[] (the two-approver
+// promotion split), and isMember flags on approver/requester (someone left mid-request).
+export interface ApprovalApprover { approverId: string | null; name: string | null; email: string | null; isMember: boolean }
+export interface ApprovalItem {
+  postId: string;
+  authorId: string | null;
+  authorName: string | null;
+  authorEmail: string | null;
+  submittedAt: string | null;
+  updatedAt: string | null;
+  editedSinceSubmit: boolean;
+  isPaidPromotion: boolean;
+  requiredApprovals: number;
+  approvals: ApprovalApprover[];
+  requesterId: string | null;
+  requesterName: string | null;
+  requesterIsMember: boolean;
+  scheduleType: string | null;
+  scheduledAt: string | null;
+  schedulePassed: boolean;
+}
+
+export interface Comment { id: string; author_id: string | null; author_name: string | null; author_email: string | null; body: string; mentions: string[]; created_at: string; edited_at: string | null }
+
+// --- networks (Phase 6) ---
+export interface CapabilityNote { surface: string; charLimit: number; firstComment: boolean; threads: string }
+export interface AccountHealth {
+  id: string;
+  provider: string;
+  displayName: string | null;
+  handle: string | null;
+  status: string; // active | auth_expired | needs_review | revoked | suspended
+  timezone: string;
+  lastPublishedAt: string | null;
+  queuedCount: number;
+  capabilities: CapabilityNote | null;
+}
+export interface CatalogEntry { provider: string; displayName: string; capabilities: CapabilityNote }
+export interface ComingSoonEntry { name: string; blockedOn: string }
+export interface ProviderCatalog { available: CatalogEntry[]; comingSoon: ComingSoonEntry[] }
+// The connect handshake: an OAuth network sends you to a URL; a credential network asks for fields.
+export type BeginConnect =
+  | { kind: 'oauth_redirect'; url: string }
+  | { kind: 'credentials'; provider: string; fields: { key: string; label: string; secret: boolean }[] };
+
+// --- team + settings (Phase 5) ---
+export interface Member { userId: string; name: string | null; email: string; role: Role; joinedAt: string; lastActiveAt: string | null }
+export interface Invitation { id: string; email: string; role: Role; invitedBy: string | null; createdAt: string; expiresAt: string }
+export interface WorkspaceDetail { id: string; name: string; slug: string; defaultTimezone: string; planTier: string; settings: WorkspaceSettings }
+// Free-form workspace preferences (jsonb server-side). All optional; absent means "coded default".
+// slackWebhookUrl gates the Slack notification channel — without it a user can't switch on delivery to
+// nowhere (there's no webhook-management UI yet, so it stays unset — see the Notifications tab note).
+export interface WorkspaceSettings { weekStartsOn?: number; defaultScheduleBasis?: 'audience' | 'workspace' | 'utc'; requireApprovalForEditors?: boolean; autoQueueFill?: boolean; slackWebhookUrl?: string }
+
+export interface Session { id: string; ip: string | null; userAgent: string | null; createdAt: string; lastUsedAt: string | null; expiresAt: string; current: boolean }
+
+// --- notifications (Phase 5) ---
+export interface Notification { id: string; event_type: string; title: string; body: string | null; deep_link: string | null; read_at: string | null; created_at: string }
+export type NotificationChannel = 'in_app' | 'email' | 'slack';
+export interface NotificationPreferenceRow { event: string; channels: Record<NotificationChannel, boolean> }

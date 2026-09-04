@@ -20,12 +20,19 @@ async function raw(method: string, path: string, body: unknown, token: string | 
   const headers: Record<string, string> = {};
   if (body !== undefined) headers['content-type'] = 'application/json';
   if (token) headers.authorization = `Bearer ${token}`;
-  return fetch(path, {
-    method,
-    headers,
-    credentials: 'include', // send/receive the refresh cookie (same-origin via the dev proxy)
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  try {
+    return await fetch(path, {
+      method,
+      headers,
+      credentials: 'include', // send/receive the refresh cookie (same-origin via the dev proxy)
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch {
+    // fetch() rejects with a bare TypeError when the server is unreachable (offline, DNS, connection
+    // refused). Convert it into a typed ApiError with a human message so callers show "can't reach
+    // Meridian", never a generic "network error" or an unhandled throw.
+    throw new ApiError('offline', "Can't reach Meridian — check your connection and try again.", 0, null);
+  }
 }
 
 // Get a fresh access token from the refresh cookie. Shared so concurrent callers trigger ONE refresh.
@@ -69,6 +76,6 @@ export const get = <T>(path: string, auth = true): Promise<T> => apiFetch<T>('GE
 export const post = <T>(path: string, body?: unknown, auth = true): Promise<T> => apiFetch<T>('POST', path, { body, auth });
 export const patch = <T>(path: string, body?: unknown): Promise<T> => apiFetch<T>('PATCH', path, { body });
 export const put = <T>(path: string, body?: unknown): Promise<T> => apiFetch<T>('PUT', path, { body });
-export const del = <T>(path: string): Promise<T> => apiFetch<T>('DELETE', path, {});
+export const del = <T>(path: string, body?: unknown): Promise<T> => apiFetch<T>('DELETE', path, { body });
 
 export { ApiError };

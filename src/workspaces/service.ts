@@ -141,6 +141,100 @@ export async function leaveWorkspace(actor: ScopedActor) {
   });
 }
 
+// --- read models & settings for the Team + Settings screens (tenant-scoped) ---
+
+export interface MemberRow { userId: string; name: string | null; email: string; role: Role; joinedAt: string; lastActiveAt: string | null }
+// The Team screen's members table. last-active = the most recent session touch across the user's
+// sessions (sessions has no RLS and is keyed by user, so it's read outside the tenant policy).
+export async function listMembers(actor: ScopedActor): Promise<MemberRow[]> {
+  return withTenant({ workspaceId: actor.workspaceId, userId: actor.userId, role: actor.role }, async (tx) => {
+    authorize(actor, 'member:view');
+    const r = rows<{ user_id: string; name: string | null; email: string; role: Role; created_at: string; last_active_at: string | null }>(await tx.execute(sql`
+      select m.user_id, u.name, u.email, m.role, m.created_at,
+             (select max(s.last_used_at) from sessions s where s.user_id = m.user_id) as last_active_at
+      from memberships m join users u on u.id = m.user_id
+      where m.workspace_id = ${actor.workspaceId}
+      order by m.created_at
+    `));
+    return r.map((m) => ({
+      userId: m.user_id, name: m.name, email: m.email, role: m.role,
+      joinedAt: new Date(m.created_at).toISOString(),
+      lastActiveAt: m.last_active_at ? new Date(m.last_active_at).toISOString() : null,
+    }));
+  });
+}
+
+export interface InvitationRow { id: string; email: string; role: Role; invitedBy: string | null; createdAt: string; expiresAt: string }
+// Pending invites, shown as their own rows in the Team table (a fresh invite must appear immediately).
+export async function listInvitations(actor: ScopedActor): Promise<InvitationRow[]> {
+  return withTenant({ workspaceId: actor.workspaceId, userId: actor.userId, role: actor.role }, async (tx) => {
+    authorize(actor, 'member:view');
+    const r = rows<{ id: string; email: string; role: Role; invited_by: string | null; created_at: string; expires_at: string }>(await tx.execute(sql`
+      select id, email, role, invited_by, created_at, expires_at from invitations
+      where workspace_id = ${actor.workspaceId} and status = 'pending' and expires_at > now()
+      order by created_at desc
+    `));
+    return r.map((i) => ({
+      id: i.id, email: i.email, role: i.role, invitedBy: i.invited_by,
+      createdAt: new Date(i.created_at).toISOString(),
+      expiresAt: new Date(i.expires_at).toISOString(),
+    }));
+  });
+}
+
+export interface WorkspaceDetail { id: string; name: string; slug: string; defaultTimezone: string; planTier: string; settings: Record<string, unknown> }
+export async function getWorkspace(actor: ScopedActor): Promise<WorkspaceDetail> {
+  return withTenant({ workspaceId: actor.workspaceId, userId: actor.userId, role: actor.role }, async (tx) => {
+    authorize(actor, 'workspace:view');
+    const r = rows<{ id: string; name: string; slug: string; default_timezone: string; plan_tier: string; settings: Record<string, unknown> | null }>(await tx.execute(sql`
+      select id, name, slug, default_timezone, plan_tier, settings from workspaces where id = ${actor.workspaceId} and deleted_at is null
+    `));
+    if (!r.length) throw new WorkspaceError('not_found');
+    const w = r[0];
+    return { id: w.id, name: w.name, slug: w.slug, defaultTimezone: w.default_timezone, planTier: w.plan_tier, settings: w.settings ?? {} };
+  });
+}
+
+// Update workspace name / default timezone / free-form settings. Settings are MERGED (jsonb ||), so a
+// PATCH that carries only { weekStart } never clobbers unrelated posting-default toggles.
+export async function updateWorkspace(actor: ScopedActor, patch: { name?: string; timezone?: string; settings?: Record<string, unknown> }, meta: Meta = {}) {
+  return withTenant({ workspaceId: actor.workspaceId, userId: actor.userId, role: actor.role }, async (tx) => {
+    authorize(actor, 'workspace:update');
+    const before = rows<{ name: string; default_timezone: string; settings: Record<string, unknown> | null }>(await tx.execute(sql`
+      select name, default_timezone, settings from workspaces where id = ${actor.workspaceId} and deleted_at is null for update
+    `));
+    if (!before.length) throw new WorkspaceError('not_found');
+    if (patch.name !== undefined && !patch.name.trim()) throw new WorkspaceError('name_required');
+    if (patch.name !== undefined) await tx.execute(sql`update workspaces set name = ${patch.name.trim()} where id = ${actor.workspaceId}`);
+    if (patch.timezone !== undefined) await tx.execute(sql`update workspaces set default_timezone = ${patch.timezone} where id = ${actor.workspaceId}`);
+    if (patch.settings !== undefined) await tx.execute(sql`update workspaces set settings = coalesce(settings, '{}'::jsonb) || ${JSON.stringify(patch.settings)}::jsonb where id = ${actor.workspaceId}`);
+    await writeAudit(tx, { workspaceId: actor.workspaceId, actorUserId: actor.userId, action: 'workspace.updated', targetType: 'workspace', targetId: actor.workspaceId, before: { name: before[0].name, timezone: before[0].default_timezone }, after: { name: patch.name, timezone: patch.timezone, settings: patch.settings }, ip: meta.ip, userAgent: meta.userAgent });
+    return getWorkspaceInTx(tx, actor.workspaceId);
+  });
+}
+
+// Soft-delete (sets deleted_at). Only an Owner can, and the workspace must still exist. The API layer
+// requires the caller to type the workspace name to confirm; the name check is enforced there.
+export async function deleteWorkspace(actor: ScopedActor, meta: Meta = {}) {
+  return withTenant({ workspaceId: actor.workspaceId, userId: actor.userId, role: actor.role }, async (tx) => {
+    authorize(actor, 'workspace:delete');
+    const r = rows<{ id: string; slug: string }>(await tx.execute(sql`
+      update workspaces set deleted_at = now() where id = ${actor.workspaceId} and deleted_at is null returning id, slug
+    `));
+    if (!r.length) throw new WorkspaceError('not_found');
+    await writeAudit(tx, { workspaceId: actor.workspaceId, workspaceSlug: r[0].slug, actorUserId: actor.userId, action: 'workspace.deleted', targetType: 'workspace', targetId: actor.workspaceId, ip: meta.ip, userAgent: meta.userAgent });
+    return { deleted: true as const };
+  });
+}
+
+async function getWorkspaceInTx(tx: Parameters<Parameters<typeof withTenant>[1]>[0], workspaceId: string): Promise<WorkspaceDetail> {
+  const r = rows<{ id: string; name: string; slug: string; default_timezone: string; plan_tier: string; settings: Record<string, unknown> | null }>(await tx.execute(sql`
+    select id, name, slug, default_timezone, plan_tier, settings from workspaces where id = ${workspaceId}
+  `));
+  const w = r[0];
+  return { id: w.id, name: w.name, slug: w.slug, defaultTimezone: w.default_timezone, planTier: w.plan_tier, settings: w.settings ?? {} };
+}
+
 // Promote the target to Owner BEFORE stepping the initiator down, so an Owner always exists.
 export async function transferOwnership(actor: ScopedActor, toUserId: string, meta: Meta = {}) {
   return withTenant({ workspaceId: actor.workspaceId, userId: actor.userId, role: actor.role }, async (tx) => {

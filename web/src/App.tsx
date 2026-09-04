@@ -15,6 +15,13 @@ import { Composer } from './screens/app/composer/Composer';
 import { Calendar } from './screens/app/calendar/Calendar';
 import { Queue } from './screens/app/queue/Queue';
 import { Analytics } from './screens/app/analytics/Analytics';
+import { Approvals } from './screens/app/approvals/Approvals';
+import { Team } from './screens/app/team/Team';
+import { Settings } from './screens/app/settings/Settings';
+import { Networks } from './screens/app/networks/Networks';
+import { OAuthCallback } from './screens/app/networks/OAuthCallback';
+import { Setup } from './screens/app/setup/Setup';
+import { NotFound } from './screens/NotFound';
 import { Placeholder } from './screens/app/Placeholder';
 
 function RequireAuth(): JSX.Element {
@@ -38,16 +45,20 @@ export function App(): JSX.Element {
       <Route path="/verify" element={<VerifyEmail />} />
       <Route element={<RequireAuth />}>
         <Route path="/" element={<Home />} />
+        <Route path="/setup" element={<Setup />} />
         <Route path="/composer" element={<Composer />} />
         <Route path="/calendar" element={<Calendar />} />
         <Route path="/queue" element={<Queue />} />
-        <Route path="/approvals" element={<Placeholder title="Approvals" icon="✓" />} />
+        <Route path="/approvals" element={<Approvals />} />
         <Route path="/analytics" element={<Analytics />} />
-        <Route path="/networks" element={<Placeholder title="Networks" icon="◈" />} />
-        <Route path="/team" element={<Placeholder title="Team" icon="⊙" />} />
+        <Route path="/networks" element={<Networks />} />
+        {/* The OAuth return lands here — inside the shell so the rail is present. */}
+        <Route path="/oauth/callback" element={<OAuthCallback />} />
+        <Route path="/team" element={<Team />} />
         <Route path="/developer" element={<Placeholder title="Developer" icon="‹›" />} />
-        <Route path="/settings" element={<Placeholder title="Settings" icon="⚙" />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="/settings" element={<Settings />} />
+        {/* A real 404, not a silent redirect. */}
+        <Route path="*" element={<NotFound />} />
       </Route>
     </Routes>
   );
