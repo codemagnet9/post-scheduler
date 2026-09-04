@@ -59,6 +59,47 @@ describe('reschedule refusal is atomic and carries the reason', () => {
   });
 });
 
+describe('bulk reschedule: one transaction, honest per-target results', () => {
+  it('target 3 of 5 is refused (expired account) while 1, 2, 4 and 5 move — in a single call', async () => {
+    const { ctx } = await seed();
+    // Five targets, each on its OWN account, so target 3's account can be independently unhealthy —
+    // the same shape a real "select several queue rows, move them together" action produces.
+    const targets: string[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      const status = i === 2 ? 'auth_expired' : 'active';
+      const accId = asRows<{ id: string }>(await withTenant(ctx, (tx) => tx.execute(sql`
+        insert into connected_accounts (workspace_id, provider, provider_account_id, timezone, status)
+        values (${ctx.workspaceId}, 'x', ${'pa-' + uniq()}, 'UTC', ${status}) returning id`)))[0].id;
+      targets.push((await scheduledTarget(ctx, accId)).targetId);
+    }
+    const originals = await Promise.all(targets.map((id) => stateOf(ctx, id)));
+
+    const { results } = await board.rescheduleTargets(ctx, targets, { localDate: dayOffset(5), localTime: '09:00', zone: 'UTC' });
+    const wantInstant = `${dayOffset(5)}T09:00:00.000Z`;
+
+    // One result per target, in order, each explicit — never a single pass/fail boolean for the batch.
+    expect(results.map((r) => r.targetId)).toEqual(targets);
+    expect(results.map((r) => r.ok)).toEqual([true, true, false, true, true]);
+    expect(results[2].code).toBe('account_reauth_required');
+    expect(results[2].reason).toMatch(/reconnect/i); // the real reason, not a generic "failed"
+    expect(results[0].instant).toBe(wantInstant);
+
+    // The four valid moves are truly PERSISTED — not rolled back just because target 3 refused.
+    for (const i of [0, 1, 3, 4]) {
+      expect(new Date((await stateOf(ctx, targets[i])).scheduled_at as string).toISOString()).toBe(wantInstant);
+    }
+    // Target 3 is untouched: still at its original time, not the new one, not nulled out.
+    const stillOriginal = await stateOf(ctx, targets[2]);
+    expect(stillOriginal.scheduled_at).toBe(originals[2].scheduled_at);
+    expect(new Date(stillOriginal.scheduled_at as string).toISOString()).not.toBe(wantInstant);
+  });
+
+  it('an empty selection is a no-op, not an error', async () => {
+    const { ctx } = await seed();
+    expect(await board.rescheduleTargets(ctx, [], { localDate: dayOffset(5), localTime: '09:00', zone: 'UTC' })).toEqual({ results: [] });
+  });
+});
+
 describe('a failed target retries independently of its siblings', () => {
   it('retrying one target does not touch the others', async () => {
     const { ctx, accountId } = await seed();

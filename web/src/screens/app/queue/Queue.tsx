@@ -10,7 +10,7 @@ import { Screen } from '../../../shell/Screen';
 import { useWorkspace } from '../../../workspace/WorkspaceProvider';
 import { useAuth } from '../../../auth/AuthProvider';
 import {
-  cancelTargets, listAccounts, listQueue, listSlots, queueHealth, rescheduleTarget, retryTarget,
+  cancelTargets, listAccounts, listQueue, listSlots, queueHealth, rescheduleTargets, retryTarget,
   addSlot, removeSlot,
 } from '../../../api/endpoints';
 import { ApiError } from '../../../api/client';
@@ -55,14 +55,23 @@ export function Queue(): JSX.Element {
 
   const doRetry = async (id: string) => { await retryTarget(ws, id).catch((e) => setBanner(e instanceof ApiError ? e.displayMessage : 'Retry failed.')); invalidateAll(); };
   const doCancel = async () => { const r = await cancelTargets(ws, [...selected]).catch(() => ({ canceled: 0 })); setBanner(`Canceled ${r.canceled} ${r.canceled === 1 ? 'post' : 'posts'}.`); clearSel(); invalidateAll(); };
+  // ONE request, ONE server-side transaction (see src/scheduling/board.ts rescheduleTargets): every
+  // target that can legally move does; a target refused for a real reason (its account expired since
+  // selection, it's no longer scheduled, or the time is now in the past) is reported explicitly, never
+  // silently dropped and never presented as if it moved. A network failure before the server responds
+  // is reported honestly too — nothing is assumed to have moved.
   const doBulkReschedule = async () => {
     if (!bulkWhen) return;
-    let moved = 0; const reasons: string[] = [];
-    for (const id of selected) {
-      try { await rescheduleTarget(ws, id, { localDate: bulkWhen.date, localTime: bulkWhen.time, zone: timezone }); moved += 1; }
-      catch (e) { reasons.push(e instanceof ApiError ? e.message : 'move failed'); }
-    }
-    setBanner(`Moved ${moved} ${moved === 1 ? 'post' : 'posts'}${reasons.length ? ` · ${reasons.length} refused (${reasons[0]})` : ''}.`);
+    const ids = [...selected];
+    const { results } = await rescheduleTargets(ws, ids, { localDate: bulkWhen.date, localTime: bulkWhen.time, zone: timezone })
+      .catch((e): { results: import('../../../api/types').RescheduleResult[] } => ({
+        results: ids.map((targetId) => ({ targetId, ok: false, reason: e instanceof ApiError ? e.displayMessage : 'Could not reach the server — nothing was moved.' })),
+      }));
+    const moved = results.filter((r) => r.ok).length;
+    const refused = results.filter((r) => !r.ok);
+    setBanner(refused.length === 0
+      ? `Moved ${moved} ${moved === 1 ? 'post' : 'posts'}.`
+      : `Moved ${moved} of ${results.length}. ${refused.length} refused — ${refused[0].reason}${refused.length > 1 ? ` (+${refused.length - 1} more)` : ''}`);
     setBulkWhen(null); clearSel(); invalidateAll();
   };
 

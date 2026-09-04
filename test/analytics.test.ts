@@ -19,7 +19,13 @@ import { engagementRate, snapshotColumns, type NormalizedMetrics } from '../src/
 import { nextMetricsAt, metricsSnapshotTick, backfillWorkspaceMetrics } from '../src/analytics/ingest';
 import { headline, dailySeriesByNetwork, postsPerNetwork, topPostsByEngagementRate, engagementHeatmap } from '../src/analytics/read-models';
 import { createExport, getExport, processExportsTick } from '../src/analytics/export';
+import { parseRange } from '../src/analytics/service';
+import { metricsGlossary } from '../src/analytics/glossary';
 import { adminDb, asRows } from './helpers/db';
+// The glossary test needs the REAL bluesky/line adapters registered, the same way server.ts/worker.ts
+// do at boot — vitest gives each test file its own module registry, so this file must register them
+// itself (mirroring test/providers.test.ts's own explicit registration).
+import '../src/providers/adapters/index';
 
 let seq = 0;
 const uniq = () => `${Date.now()}-${seq++}`;
@@ -207,6 +213,55 @@ describe('read models against a seeded fixture', () => {
     expect(cell(1, 10)!.avgEngagements).toBe(30); // Mon 10:00 -> Post1 latest
     expect(cell(4, 14)!.avgEngagements).toBe(60); // Thu 14:00 -> Post2
     expect(cell(0, 9)!.avgEngagements).toBe(5);   // Sun 09:00 -> Post3
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('the dashboard range is resolved in the given zone, not naive UTC (Frontend Phase 4 fix)', () => {
+  it('midnight of a date differs between an explicit zone and the UTC default', () => {
+    // Midnight Aug 30 in Kolkata (+5:30, no DST) is Aug 29 18:30 UTC — genuinely a different instant
+    // from a naive UTC-string parse of the same date string.
+    const ist = parseRange({ from: '2026-08-30', to: '2026-08-30', tz: 'Asia/Kolkata' });
+    expect(ist.from.toISOString()).toBe('2026-08-29T18:30:00.000Z');
+    expect(ist.to.toISOString()).toBe('2026-08-30T18:30:00.000Z'); // exclusive end = +1 IST day
+
+    const utc = parseRange({ from: '2026-08-30', to: '2026-08-30' }); // no tz => UTC (public-API default)
+    expect(utc.from.toISOString()).toBe('2026-08-30T00:00:00.000Z');
+    expect(utc.from.getTime()).not.toBe(ist.from.getTime());
+  });
+});
+
+describe('the heatmap buckets by the GIVEN zone, not UTC or the account\'s own zone', () => {
+  it('the same publish instant lands on a different day/hour cell per zone', async () => {
+    const { ctx } = await makeWorkspace();
+    const n = await addNetwork(ctx); // account timezone is 'UTC' — proves the bucketing uses the PARAMETER, not ca.timezone
+    // Monday 23:00 UTC is Tuesday 04:30 in Kolkata (+5:30) — a different weekday AND hour.
+    const t = await publishedTarget(ctx, n, { publishedAt: D('2025-06-02T23:00:00Z') });
+    await seedSnapshot(ctx, n, t.targetId, D('2025-06-03T23:00:00Z'), { engagements: 42 });
+    const range = { from: D('2025-06-01T00:00:00Z'), to: D('2025-07-01T00:00:00Z') };
+
+    const utcHeat = await engagementHeatmap(ctx, range); // default zone: UTC
+    expect(utcHeat.find((c) => c.dow === 1 && c.hour === 23)?.avgEngagements).toBe(42); // Mon 23:00 UTC
+
+    const istHeat = await engagementHeatmap(ctx, range, 'Asia/Kolkata');
+    expect(istHeat.find((c) => c.dow === 2 && c.hour === 4)?.avgEngagements).toBe(42);  // Tue 04:30 IST
+    expect(istHeat.find((c) => c.dow === 1 && c.hour === 23)).toBeUndefined();          // not in the old UTC cell
+  });
+});
+
+describe('the metrics glossary', () => {
+  it('lists a metrics-capable network with its documented field mapping, and a non-capable one as fully unavailable', () => {
+    const entries = metricsGlossary();
+    const bluesky = entries.find((e) => e.provider === 'bluesky');
+    expect(bluesky).toBeDefined();
+    expect(bluesky!.supportsMetrics).toBe(true);
+    expect(bluesky!.fields.find((f) => f.field === 'engagements')).toEqual({ field: 'engagements', status: 'supported', note: 'likeCount + repostCount + replyCount' });
+    expect(bluesky!.fields.find((f) => f.field === 'impressions')).toEqual({ field: 'impressions', status: 'unavailable' });
+
+    const line = entries.find((e) => e.provider === 'line');
+    expect(line).toBeDefined();
+    expect(line!.supportsMetrics).toBe(false);
+    expect(line!.fields.every((f) => f.status === 'unavailable')).toBe(true); // every field, not a mix
   });
 });
 

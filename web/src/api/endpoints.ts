@@ -3,7 +3,8 @@ import { get, post, put, patch, del, setAccessToken } from './client';
 import type {
   Account, User, Workspace, WorkspaceSummary,
   PostContent, PostDetail, ValidationResponse, OverridePatch, SchedulePatch,
-  BoardEvent, Slot, QueueHealth,
+  BoardEvent, Slot, QueueHealth, RescheduleResult,
+  AnalyticsDashboard, ProviderGlossaryEntry, ExportJob,
 } from './types';
 
 // --- auth ---
@@ -58,12 +59,27 @@ export const listQueue = (ws: string, params: { group?: string; provider?: strin
 };
 export const queueHealth = (ws: string): Promise<QueueHealth> => get<QueueHealth>(`/workspaces/${ws}/queue-health`);
 export const rescheduleTarget = (ws: string, targetId: string, body: { localDate: string; localTime: string; zone: string }): Promise<{ targetId: string; instant: string }> => post(`/workspaces/${ws}/targets/${targetId}/reschedule`, body);
+// Bulk: ONE request/ONE server transaction. Returns a per-target outcome — never a single boolean —
+// so a genuine partial result (some targets refused) can be shown honestly instead of assumed.
+export const rescheduleTargets = (ws: string, targetIds: string[], body: { localDate: string; localTime: string; zone: string }): Promise<{ results: RescheduleResult[] }> => post(`/workspaces/${ws}/targets/reschedule`, { targetIds, ...body });
 export const retryTarget = (ws: string, targetId: string): Promise<{ ok: true }> => post(`/workspaces/${ws}/targets/${targetId}/retry`);
 export const cancelTargets = (ws: string, targetIds: string[]): Promise<{ canceled: number }> => post(`/workspaces/${ws}/targets/cancel`, { targetIds });
 export const listSlots = (ws: string): Promise<Slot[]> => get<Slot[]>(`/workspaces/${ws}/slots`);
 export const addSlot = (ws: string, body: { market: string; dayOfWeek: number; localTime: string; label?: string }): Promise<{ slotId: string }> => post(`/workspaces/${ws}/slots`, body);
 export const moveSlot = (ws: string, slotId: string, body: { dayOfWeek: number; localTime: string }): Promise<void> => patch(`/workspaces/${ws}/slots/${slotId}`, body);
 export const removeSlot = (ws: string, slotId: string): Promise<void> => del(`/workspaces/${ws}/slots/${slotId}`);
+
+// --- analytics ---
+// Every call sends ?tz=<workspace zone> so the range boundaries AND the heatmap buckets resolve in
+// the zone the page is labelled "Showing" in — the server does the resolving, never the browser.
+export const getAnalytics = (ws: string, params: { from: string; to: string; tz: string }): Promise<AnalyticsDashboard> =>
+  get(`/workspaces/${ws}/analytics?${new URLSearchParams(params).toString()}`);
+export const getMetricsGlossary = (ws: string): Promise<ProviderGlossaryEntry[]> =>
+  get(`/workspaces/${ws}/analytics/glossary`);
+export const requestAnalyticsExport = (ws: string, params: { from: string; to: string; tz: string }): Promise<ExportJob> =>
+  post(`/workspaces/${ws}/analytics/exports?${new URLSearchParams(params).toString()}`);
+export const getExportStatus = (ws: string, id: string): Promise<ExportJob> =>
+  get(`/workspaces/${ws}/analytics/exports/${id}`);
 
 // media tray
 export const createUpload = (ws: string, body: { filename: string; declaredType: string; byteSize: number }): Promise<{ assetId: string; uploadUrl: string; storageKey: string }> => post(`/workspaces/${ws}/media`, body);

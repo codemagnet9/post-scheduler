@@ -107,29 +107,56 @@ export async function listQueue(actor: ScopedActor, opts: { group?: string; prov
   });
 }
 
-// --- RESCHEDULE one target: resolve server-side, re-check, move (or reject atomically). ---
-export async function rescheduleTarget(actor: ScopedActor, targetId: string, when: { localDate: string; localTime: string; zone: string }): Promise<{ targetId: string; instant: string }> {
+// --- RESCHEDULE (bulk): resolve server-side, re-check EACH target, move what's valid — all in ONE
+// transaction/ONE request, so a browser interruption mid-batch can never leave an unknown split
+// between "moved" and "not attempted". A target refusing the new time (its account expired since
+// selection, it's no longer 'scheduled', or the resolved instant is now in the past) is an EXPECTED
+// business outcome, not a transaction failure: it does not roll back its siblings, and it is reported
+// explicitly per target — never silently dropped, never misreported as having moved. Only a genuine
+// server/DB error aborts the whole transaction, so nothing commits in that case ("all" succeeded
+// requests are truly durable together, or a real failure leaves NONE of them applied).
+export interface RescheduleResult { targetId: string; ok: boolean; instant?: string; code?: string; reason?: string }
+
+export async function rescheduleTargets(actor: ScopedActor, targetIds: string[], when: { localDate: string; localTime: string; zone: string }): Promise<{ results: RescheduleResult[] }> {
+  if (!targetIds.length) return { results: [] };
   return withTenant(ctxOf(actor), async (tx) => {
     authorize(actor, 'post:schedule');
-    const t = rows<{ state: string; post_id: string; account_status: string }>(await tx.execute(sql`
-      select pt.state, pt.post_id, ca.status as account_status
-      from post_targets pt join connected_accounts ca on ca.id = pt.connected_account_id
-      where pt.id = ${targetId}`))[0];
-    if (!t) throw new RescheduleError('not_found', 'That post is no longer here.');
-    if (t.state !== 'scheduled') throw new RescheduleError('not_reschedulable', 'Only a scheduled post can be moved.');
 
     const [y, mo, d] = when.localDate.split('-').map(Number);
     const [h, mi] = when.localTime.split(':').map(Number);
     const instant = resolveWallClockToUTC(when.zone, y, mo, d, h, mi).instant;
+    const inPast = instant.getTime() <= Date.now();
 
-    // Re-run the checks that a time change can newly fail — this is why moves go through the server.
-    if (instant.getTime() <= Date.now()) throw new RescheduleError('schedule_in_past', 'That time has already passed — pick a time in the future.');
-    if (t.account_status !== 'active') throw new RescheduleError('account_reauth_required', 'Reconnect this account before scheduling — its connection expired.');
+    const results: RescheduleResult[] = [];
+    for (const targetId of targetIds) {
+      // FOR UPDATE locks this row for the rest of THIS transaction — a concurrent mutation waits
+      // rather than racing us, and every accepted move below commits together on transaction end.
+      const t = rows<{ state: string; account_status: string }>(await tx.execute(sql`
+        select pt.state, ca.status as account_status
+        from post_targets pt join connected_accounts ca on ca.id = pt.connected_account_id
+        where pt.id = ${targetId} for update of pt`))[0];
 
-    await tx.execute(sql`update post_targets set scheduled_at = ${toTs(instant)}, publish_due_at = ${toTs(instant)}, version = version + 1 where id = ${targetId} and state = 'scheduled'`);
-    await emitEvent(tx, { workspaceId: actor.workspaceId, aggregateType: 'post_target', aggregateId: targetId, type: 'post_target.rescheduled', payload: { instant: instant.toISOString() } });
-    return { targetId, instant: instant.toISOString() };
+      if (!t) { results.push({ targetId, ok: false, code: 'not_found', reason: 'That post is no longer here.' }); continue; }
+      if (t.state !== 'scheduled') { results.push({ targetId, ok: false, code: 'not_reschedulable', reason: 'Only a scheduled post can be moved.' }); continue; }
+      if (inPast) { results.push({ targetId, ok: false, code: 'schedule_in_past', reason: 'That time has already passed — pick a time in the future.' }); continue; }
+      if (t.account_status !== 'active') { results.push({ targetId, ok: false, code: 'account_reauth_required', reason: 'Reconnect this account before scheduling — its connection expired.' }); continue; }
+
+      await tx.execute(sql`update post_targets set scheduled_at = ${toTs(instant)}, publish_due_at = ${toTs(instant)}, version = version + 1 where id = ${targetId} and state = 'scheduled'`);
+      await emitEvent(tx, { workspaceId: actor.workspaceId, aggregateType: 'post_target', aggregateId: targetId, type: 'post_target.rescheduled', payload: { instant: instant.toISOString() } });
+      results.push({ targetId, ok: true, instant: instant.toISOString() });
+    }
+    return { results };
   });
+}
+
+// Single-target convenience wrapper (Calendar drag-and-drop moves exactly one event at a time).
+// Shares the exact same validation/locking path as the bulk version above; throws RescheduleError so
+// existing single-target callers keep their reject-with-reason contract.
+export async function rescheduleTarget(actor: ScopedActor, targetId: string, when: { localDate: string; localTime: string; zone: string }): Promise<{ targetId: string; instant: string }> {
+  const { results } = await rescheduleTargets(actor, [targetId], when);
+  const r = results[0];
+  if (!r.ok) throw new RescheduleError(r.code ?? 'refused', r.reason ?? 'Could not move this post.');
+  return { targetId: r.targetId, instant: r.instant as string };
 }
 
 // --- RETRY one failed target — independently of its siblings. ---

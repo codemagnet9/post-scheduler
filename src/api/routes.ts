@@ -146,6 +146,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     scoped.get('/workspaces/:workspaceId/queue', (req) => board.listQueue(req.tenant!, req.query as { group?: string; provider?: string; authorId?: string; cursor?: string; limit?: number }));
     scoped.get('/workspaces/:workspaceId/queue-health', (req) => board.queueHealth(req.tenant!));
     scoped.post('/workspaces/:workspaceId/targets/cancel', (req) => board.cancelTargets(req.tenant!, body<{ targetIds: string[] }>(req).targetIds));
+    // Bulk reschedule: ONE request, ONE transaction. Returns a per-target result — never a single
+    // boolean — so the UI can show exactly which targets moved and which were refused, and why.
+    scoped.post('/workspaces/:workspaceId/targets/reschedule', (req) => board.rescheduleTargets(req.tenant!, body<{ targetIds: string[]; localDate: string; localTime: string; zone: string }>(req).targetIds, body<{ localDate: string; localTime: string; zone: string }>(req)));
     scoped.post('/workspaces/:workspaceId/targets/:targetId/reschedule', (req) => board.rescheduleTarget(req.tenant!, (req.params as { targetId: string }).targetId, body<{ localDate: string; localTime: string; zone: string }>(req)));
     scoped.post('/workspaces/:workspaceId/targets/:targetId/retry', (req) => board.retryTarget(req.tenant!, (req.params as { targetId: string }).targetId));
 
@@ -190,12 +193,16 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     scoped.get('/workspaces/:workspaceId/notification-preferences', (req) => prefs.getPreferencesMatrix(req.tenant!));
     scoped.put('/workspaces/:workspaceId/notification-preferences', (req) => prefs.setPreference(req.tenant!, body<{ event: prefs.NotificationEvent; channel: prefs.Channel; enabled: boolean }>(req).event, body<{ event: prefs.NotificationEvent; channel: prefs.Channel; enabled: boolean }>(req).channel, body<{ event: prefs.NotificationEvent; channel: prefs.Channel; enabled: boolean }>(req).enabled));
 
-    // Analytics: the dashboard read models, plus CSV export as a background job (poll status for the link).
-    const range = (req: FastifyRequest) => analytics.parseRange(req.query as { from?: string; to?: string });
-    scoped.get('/workspaces/:workspaceId/analytics', (req) => analytics.dashboard(req.tenant!, range(req)));
+    // Analytics: the dashboard read models, plus CSV export as a background job (poll status for the
+    // link). The console ALWAYS sends ?tz=<workspace zone> so the range and the heatmap resolve in
+    // the same zone the page is labelled "Showing" in — never the browser's, never a silent UTC.
+    const analyticsQuery = (req: FastifyRequest) => req.query as { from?: string; to?: string; tz?: string };
+    const range = (req: FastifyRequest) => analytics.parseRange(analyticsQuery(req));
+    scoped.get('/workspaces/:workspaceId/analytics', (req) => analytics.dashboard(req.tenant!, range(req), analyticsQuery(req).tz || 'UTC'));
     scoped.post('/workspaces/:workspaceId/analytics/exports', (req) => analytics.requestExport(req.tenant!, range(req)));
     scoped.get('/workspaces/:workspaceId/analytics/exports/:id', (req) => analytics.exportStatus(req.tenant!, (req.params as { id: string }).id));
     scoped.post('/workspaces/:workspaceId/analytics/backfill', (req) => analytics.backfill(req.tenant!));
+    scoped.get('/workspaces/:workspaceId/analytics/glossary', (req) => analytics.glossary(req.tenant!));
 
     // Developer console: API keys (create returns the plaintext ONCE). Owner-only, enforced in the service.
     scoped.get('/workspaces/:workspaceId/api-keys', (req) => apikeys.listApiKeys(req.tenant!));

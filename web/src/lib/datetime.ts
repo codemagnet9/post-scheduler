@@ -31,3 +31,9 @@ export function zoneAbbrev(timeZone: string, at: Instant = new Date()): string {
   const parts = new Intl.DateTimeFormat('en-US', { timeZone, timeZoneName: 'short' }).formatToParts(toDate(at));
   return parts.find((p) => p.type === 'timeZoneName')?.value ?? timeZone;
 }
+
+// The CALENDAR DATE (YYYY-MM-DD) an instant falls on in a given zone — the zone-aware counterpart to
+// `new Date().toISOString().slice(0,10)`, which is always UTC's date and therefore wrong here. This is
+// how "today" and range boundaries are computed IN THE WORKSPACE'S ZONE, not the browser's.
+export const ymdInZone = (value: Instant, timeZone: string): string =>
+  new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(toDate(value));

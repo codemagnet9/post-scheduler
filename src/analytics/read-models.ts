@@ -119,22 +119,27 @@ export async function postsPerNetwork(ctx: TenantContext, { from, to }: DateRang
 }
 
 // --- 4) TOP POSTS BY ENGAGEMENT RATE. Only posts with impressions can have a rate (else unavailable
-//        -> excluded). Rate uses the single ENGAGEMENT_RATE_SQL definition. ---
-export interface TopPost { postId: string; engagements: number | null; impressions: number | null; engagementRate: number | null }
+//        -> excluded). Rate uses the single ENGAGEMENT_RATE_SQL definition. Carries the shared caption
+//        + which networks it went to, so a top-posts table can identify the post — an id alone isn't
+//        useful UI. `p.content` is selectable ungrouped because `p.id` is posts' primary key
+//        (Postgres's functional-dependency rule for GROUP BY). ---
+export interface TopPost { postId: string; text: string; providers: string[]; engagements: number | null; impressions: number | null; engagementRate: number | null }
 
 export async function topPostsByEngagementRate(ctx: TenantContext, { from, to }: DateRange, limit = 10): Promise<TopPost[]> {
   return withTenant(ctx, async (tx) => {
-    const r = rows<{ post_id: string; engagements: string | null; impressions: string | null; engagement_rate: string | null }>(await tx.execute(sql`
+    const r = rows<{ post_id: string; text: string | null; providers: string[]; engagements: string | null; impressions: string | null; engagement_rate: string | null }>(await tx.execute(sql`
       with latest as (
         select distinct on (ms.post_target_id) ms.post_target_id, ms.engagements, ms.impressions
         from metric_snapshots ms
         where ms.workspace_id = ${ctx.workspaceId} and ms.captured_at <= ${iso(to)}
         order by ms.post_target_id, ms.captured_at desc
       )
-      select p.id as post_id, sum(l.engagements) as engagements, sum(l.impressions) as impressions,
+      select p.id as post_id, p.content->>'text' as text, array_agg(distinct ca.provider) as providers,
+             sum(l.engagements) as engagements, sum(l.impressions) as impressions,
              ${sql.raw(ENGAGEMENT_RATE_SQL)} as engagement_rate
       from posts p
       join post_targets pt on pt.post_id = p.id
+      join connected_accounts ca on ca.id = pt.connected_account_id
       join latest l on l.post_target_id = pt.id
       where p.workspace_id = ${ctx.workspaceId} and pt.state = 'published'
         and pt.published_at >= ${iso(from)} and pt.published_at < ${iso(to)}
@@ -143,15 +148,18 @@ export async function topPostsByEngagementRate(ctx: TenantContext, { from, to }:
       order by engagement_rate desc nulls last
       limit ${limit}
     `));
-    return r.map((x) => ({ postId: x.post_id, engagements: num(x.engagements), impressions: num(x.impressions), engagementRate: num(x.engagement_rate) }));
+    return r.map((x) => ({ postId: x.post_id, text: x.text ?? '', providers: x.providers, engagements: num(x.engagements), impressions: num(x.impressions), engagementRate: num(x.engagement_rate) }));
   });
 }
 
-// --- 5) DAY-BY-HOUR ENGAGEMENT HEATMAP ("best time to post"). Buckets published posts by the local
-//        (account-timezone) weekday+hour they went out, averaging their latest engagements. ---
+// --- 5) DAY-BY-HOUR ENGAGEMENT HEATMAP ("best time to post"). Buckets published posts by the weekday
+//        + hour they went out IN THE GIVEN ZONE, averaging their latest engagements. The caller always
+//        passes the zone the dashboard is currently showing (the workspace's default, same as every
+//        other figure on the page) — never each account's own zone, and never UTC by accident, so the
+//        heatmap agrees with the "Showing <zone>" label the rest of the screen uses. ---
 export interface HeatCell { dow: number; hour: number; avgEngagements: number | null; posts: number }
 
-export async function engagementHeatmap(ctx: TenantContext, { from, to }: DateRange): Promise<HeatCell[]> {
+export async function engagementHeatmap(ctx: TenantContext, { from, to }: DateRange, timezone = 'UTC'): Promise<HeatCell[]> {
   return withTenant(ctx, async (tx) => {
     const r = rows<{ dow: number; hour: number; avg_engagements: string | null; posts: string }>(await tx.execute(sql`
       with latest as (
@@ -160,11 +168,10 @@ export async function engagementHeatmap(ctx: TenantContext, { from, to }: DateRa
         where ms.workspace_id = ${ctx.workspaceId} and ms.captured_at <= ${iso(to)}
         order by ms.post_target_id, ms.captured_at desc
       )
-      select extract(dow  from (pt.published_at at time zone ca.timezone))::int as dow,
-             extract(hour from (pt.published_at at time zone ca.timezone))::int as hour,
+      select extract(dow  from (pt.published_at at time zone ${timezone}))::int as dow,
+             extract(hour from (pt.published_at at time zone ${timezone}))::int as hour,
              avg(l.engagements)::float8 as avg_engagements, count(*)::int as posts
       from post_targets pt
-      join connected_accounts ca on ca.id = pt.connected_account_id
       join latest l on l.post_target_id = pt.id
       where pt.workspace_id = ${ctx.workspaceId} and pt.state = 'published'
         and pt.published_at >= ${iso(from)} and pt.published_at < ${iso(to)}

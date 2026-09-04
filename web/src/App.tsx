@@ -14,6 +14,7 @@ import { Home } from './screens/app/Home';
 import { Composer } from './screens/app/composer/Composer';
 import { Calendar } from './screens/app/calendar/Calendar';
 import { Queue } from './screens/app/queue/Queue';
+import { Analytics } from './screens/app/analytics/Analytics';
 import { Placeholder } from './screens/app/Placeholder';
 
 function RequireAuth(): JSX.Element {
@@ -41,7 +42,7 @@ export function App(): JSX.Element {
         <Route path="/calendar" element={<Calendar />} />
         <Route path="/queue" element={<Queue />} />
         <Route path="/approvals" element={<Placeholder title="Approvals" icon="✓" />} />
-        <Route path="/analytics" element={<Placeholder title="Analytics" icon="▨" />} />
+        <Route path="/analytics" element={<Analytics />} />
         <Route path="/networks" element={<Placeholder title="Networks" icon="◈" />} />
         <Route path="/team" element={<Placeholder title="Team" icon="⊙" />} />
         <Route path="/developer" element={<Placeholder title="Developer" icon="‹›" />} />

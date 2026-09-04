@@ -3,7 +3,7 @@
 // date in that zone), never the browser's — that's how a Mumbai user viewing a Vietnam workspace sees
 // events fall on the right days. The date helpers are the only ones allowed to format instants.
 import { ApiError } from '../../../api/client';
-import { formatTime } from '../../../lib/datetime';
+import { formatTime, ymdInZone } from '../../../lib/datetime';
 
 export interface DayCell { y: number; m: number; d: number; inMonth: boolean }
 
@@ -33,10 +33,9 @@ export function weekGrid(anchor: Date): DayCell[] {
 export const cellKey = (c: { y: number; m: number; d: number }): string =>
   `${c.y}-${String(c.m + 1).padStart(2, '0')}-${String(c.d).padStart(2, '0')}`;
 
-// The date an instant falls on IN A GIVEN ZONE, as 'YYYY-MM-DD' (en-CA yields that format).
-export function zonedDateKey(instant: string, zone: string): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(instant));
-}
+// The date an instant falls on IN A GIVEN ZONE, as 'YYYY-MM-DD'. Delegates to the one canonical
+// zone-date helper (lib/datetime.ts) rather than re-implementing the Intl formatting here.
+export const zonedDateKey = ymdInZone;
 
 // The wall-clock time of an event in the viewing zone (never the browser zone).
 export const eventTimeLabel = (instant: string, zone: string): string => formatTime(instant, zone);
