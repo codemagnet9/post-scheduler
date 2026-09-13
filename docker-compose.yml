@@ -21,7 +21,7 @@ services:
       retries: 20
 
   minio:
-    image: minio/minio
+    image: quay.io/minio/minio:latest
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: meridian
@@ -34,7 +34,7 @@ services:
   # Creates the 'meridian' bucket on startup so presigned uploads work the first time. Retries until
   # MinIO is up, makes the bucket (idempotent), then exits.
   createbuckets:
-    image: minio/mc
+    image: quay.io/minio/mc:latest
     depends_on: [minio]
     entrypoint: >
       /bin/sh -c "

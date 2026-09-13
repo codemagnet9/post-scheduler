@@ -7,6 +7,8 @@
 import { NormalizedError, AmbiguousFailure } from '../../errors';
 import { httpRequest, parseJson, HttpTimeout } from '../../http';
 import { validateAgainstCapabilities } from '../../validate';
+import { createHash } from 'node:crypto';
+import { decodeJwt } from 'jose';
 import { contentFingerprint } from '../../fingerprint';
 import type {
   ProviderAdapter, CapabilityDescriptor, AuthResult, AuthStart, AuthCallbackInput, Credentials,
@@ -52,7 +54,21 @@ function pds(c: Credentials): string {
   return (c.extra?.pdsUrl as string) ?? DEFAULT_PDS;
 }
 function rkeyFromIdempotencyKey(idempotencyKey: string): string {
-  return idempotencyKey.replace(/[^a-zA-Z0-9._~-]/g, '').slice(0, 40) || 'post';
+  // Bluesky record keys are TIDs: exactly 13 characters from this sortable base32 alphabet.
+  // Hashing keeps the key deterministic across retries while avoiding invalid punctuation.
+  const digest = createHash('sha256').update(idempotencyKey).digest();
+  const alphabet = '234567abcdefghijklmnopqrstuvwxyz';
+  return alphabet[digest[0] % 6] + Array.from(digest.subarray(1, 13), (byte) => alphabet[byte & 31]).join('');
+}
+
+function tokenExpiry(token: string | undefined): Date | undefined {
+  if (!token) return undefined;
+  try {
+    const exp = decodeJwt(token).exp;
+    return typeof exp === 'number' ? new Date(exp * 1000) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function mapError(status: number, error: string | undefined, rawText: string): NormalizedError {
@@ -108,7 +124,13 @@ export const blueskyAdapter: ProviderAdapter = {
       throw new NormalizedError('auth_expired', 'Bluesky sign-in failed — check the handle and app password.', res.text);
     }
     return {
-      credentials: { accessToken: s.accessJwt, refreshToken: s.refreshJwt, extra: { did: s.did, pdsUrl: DEFAULT_PDS } },
+      credentials: {
+        accessToken: s.accessJwt,
+        refreshToken: s.refreshJwt,
+        accessExpiresAt: tokenExpiry(s.accessJwt),
+        refreshExpiresAt: tokenExpiry(s.refreshJwt),
+        extra: { did: s.did, pdsUrl: DEFAULT_PDS },
+      },
       account: { providerAccountId: s.did, handle: s.handle, displayName: s.handle },
     };
   },
@@ -123,7 +145,13 @@ export const blueskyAdapter: ProviderAdapter = {
     if (s?.error || res.status < 200 || res.status >= 300 || !s?.accessJwt) {
       throw new NormalizedError('auth_expired', 'Your Bluesky connection expired — reconnect the account.', res.text);
     }
-    return { ...c, accessToken: s.accessJwt, refreshToken: s.refreshJwt };
+    return {
+      ...c,
+      accessToken: s.accessJwt,
+      refreshToken: s.refreshJwt,
+      accessExpiresAt: tokenExpiry(s.accessJwt),
+      refreshExpiresAt: tokenExpiry(s.refreshJwt),
+    };
   },
 
   validate(post) {
